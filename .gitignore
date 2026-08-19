@@ -1,5 +1,13 @@
 /build/
+/build-profile/
+/build-release/
 *.o
 /*.dat
+/*.zip
 /.proxchunk_parts_*
 /shots/
+gmon.out
+profile.txt
+profile-before.txt
+profile-after.txt
+scripts/__pycache__/

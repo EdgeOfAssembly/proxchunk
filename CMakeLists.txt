@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(proxchunk VERSION 1.2 LANGUAGES CXX)
+project(proxchunk VERSION 1.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,13 @@ endif()
 
 add_compile_options(-Wall -Wextra -Wpedantic -Wshadow)
 add_link_options(-Wl,--as-needed -Wl,-O1 -Wl,--hash-style=gnu -Wl,-z,relro)
+
+# Profile: same -O3 as Release plus gprof (-pg). Use: cmake -DCMAKE_BUILD_TYPE=Profile
+set(CMAKE_CXX_FLAGS_PROFILE
+    "-O3 -DNDEBUG -g -pg -fno-inline -march=x86-64 -mtune=generic -fno-omit-frame-pointer"
+    CACHE STRING "Flags for Profile builds" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS_PROFILE "-pg" CACHE STRING "Linker flags for Profile builds" FORCE)
+set(CMAKE_SHARED_LINKER_FLAGS_PROFILE "-pg" CACHE STRING "Shared linker flags for Profile builds" FORCE)
 
 find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)

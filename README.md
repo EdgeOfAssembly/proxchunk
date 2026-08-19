@@ -44,6 +44,8 @@ Options:
       --limit-mb <MB>   Download only the first MB (0 = full file)
       --direct          Single-IP download (no proxies)
       --no-progress     Do not draw the TUI progress bar
+      --no-cache        Do not load/save ~/.cache/proxchunk/proxies.txt
+      --show-proxies    Prefix each chunk bar with a 15-char IPv4 field
   -h, --help            Show help
   -v, --version         Print version
 ```

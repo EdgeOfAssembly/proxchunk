@@ -9,6 +9,7 @@
 #include "proxchunk/plan.hpp"
 
 #include <libsf/tui/progress_bar.h>
+#include <libsf/tui/detail/terminal.h>
 
 #include <curl/curl.h>
 
@@ -16,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -36,12 +38,87 @@
 #include <vector>
 
 #ifndef PROXCHUNK_VERSION
-#define PROXCHUNK_VERSION "1.2"
+#define PROXCHUNK_VERSION "1.4"
 #endif
 
 namespace fs = std::filesystem;
 
 static constexpr const char* kUserAgent = "proxchunk/" PROXCHUNK_VERSION;
+
+/** Pin a block of progress-bar rows and CUP to each on update (no newlines). */
+struct BarLayout
+{
+    int origin_row = 1;
+    int n_lines    = 0;
+
+    void begin(int lines)
+    {
+        tui::detail::set_stdout_unbuffered(true);
+        tui::detail::hide_cursor();
+        std::cout << tui::line_wrap_off;
+
+        int term_rows = 24;
+        if (auto sz = tui::detail::query_terminal_size())
+        {
+            if (sz->rows > 0)
+            {
+                term_rows = sz->rows;
+            }
+        }
+
+        int row = 0;
+        if (isatty(STDIN_FILENO))
+        {
+            tui::detail::set_raw(true);
+            auto pos = tui::detail::query_cursor_position(200000);
+            tui::detail::set_raw(false);
+            if (pos && pos->row > 0)
+            {
+                row = pos->row;
+            }
+        }
+
+        n_lines = lines;
+        if (row <= 0)
+        {
+            row = term_rows - lines + 1;
+        }
+        if (row + lines - 1 > term_rows)
+        {
+            row = term_rows - lines + 1;
+        }
+        if (row < 1)
+        {
+            row = 1;
+        }
+        origin_row = row;
+    }
+
+    void go_line(int i) const
+    {
+        std::cout << "\033[" << (origin_row + i) << ";1H";
+    }
+
+    void finish() const
+    {
+        std::cout << "\033[" << (origin_row + n_lines) << ";1H" << tui::line_wrap;
+        tui::detail::show_cursor();
+    }
+};
+
+[[nodiscard]] static fs::path
+default_proxy_cache_path()
+{
+    if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg != nullptr && xdg[0] != '\0')
+    {
+        return fs::path(xdg) / "proxchunk" / "proxies.txt";
+    }
+    if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0')
+    {
+        return fs::path(home) / ".cache" / "proxchunk" / "proxies.txt";
+    }
+    return fs::path("proxchunk.proxies");
+}
 
 // ---------------------------------------------------------------------------
 // libcurl callbacks
@@ -90,10 +167,13 @@ struct Proxy
 class ProxyPool
 {
 public:
-    explicit ProxyPool(std::size_t max_keep, int refresh_sec, std::string test_url)
+    explicit ProxyPool(std::size_t max_keep, int refresh_sec, std::string test_url,
+                       fs::path cache_path, bool use_cache)
         : max_keep_(max_keep)
         , refresh_sec_(refresh_sec)
         , test_url_(std::move(test_url))
+        , cache_path_(std::move(cache_path))
+        , use_cache_(use_cache)
     {
         curl_global_init(CURL_GLOBAL_DEFAULT);
     }
@@ -110,7 +190,10 @@ public:
         {
             return;
         }
-        refresh();
+        if (!try_reuse_cache())
+        {
+            refresh();
+        }
         updater_ = std::jthread([this](std::stop_token st) {
             while (!st.stop_requested())
             {
@@ -136,6 +219,7 @@ public:
         {
             updater_.request_stop();
         }
+        save_cache();
     }
 
     [[nodiscard]] std::optional<Proxy>
@@ -246,6 +330,110 @@ private:
 
         std::cerr << "[proxchunk] Proxy pool refreshed: " << size()
                   << " good proxies (top " << top_speed_mbps() << " MB/s)\n";
+        save_cache();
+    }
+
+    [[nodiscard]] bool
+    try_reuse_cache()
+    {
+        if (!use_cache_)
+        {
+            return false;
+        }
+        auto cached = load_cache();
+        if (cached.empty())
+        {
+            return false;
+        }
+        std::cerr << "[proxchunk] Loaded " << cached.size() << " proxies from " << cache_path_
+                  << "\n";
+        std::vector<Proxy> tested = test_proxies_multi(cached);
+        std::sort(tested.begin(), tested.end(), std::greater<>{});
+        if (tested.size() > max_keep_)
+        {
+            tested.resize(max_keep_);
+        }
+        if (tested.size() < 3)
+        {
+            std::cerr << "[proxchunk] Cache too stale (" << tested.size()
+                      << " live). Full refresh.\n";
+            return false;
+        }
+        {
+            std::unique_lock lock(mutex_);
+            pool_ = std::move(tested);
+        }
+        std::cerr << "[proxchunk] Reusing " << size() << " cached proxies (top "
+                  << top_speed_mbps() << " MB/s)\n";
+        save_cache();
+        return true;
+    }
+
+    [[nodiscard]] std::vector<std::string>
+    load_cache() const
+    {
+        std::vector<std::string> out;
+        std::ifstream in(cache_path_);
+        if (!in)
+        {
+            return out;
+        }
+        std::string line;
+        while (std::getline(in, line))
+        {
+            line = proxchunk::trim(line);
+            if (line.empty() || line[0] == '#')
+            {
+                continue;
+            }
+            auto sp = line.find(' ');
+            std::string addr = (sp == std::string::npos) ? line : line.substr(0, sp);
+            if (addr.find("://") == std::string::npos)
+            {
+                if (addr.find(':') == std::string::npos)
+                {
+                    continue;
+                }
+                addr = "http://" + addr;
+            }
+            out.push_back(std::move(addr));
+        }
+        return out;
+    }
+
+    void save_cache() const
+    {
+        if (!use_cache_ || cache_path_.empty())
+        {
+            return;
+        }
+        std::vector<Proxy> snap;
+        {
+            std::shared_lock lock(mutex_);
+            snap = pool_;
+        }
+        if (snap.empty())
+        {
+            return;
+        }
+        std::error_code ec;
+        fs::create_directories(cache_path_.parent_path(), ec);
+        std::ofstream out(cache_path_, std::ios::trunc);
+        if (!out)
+        {
+            std::cerr << "[proxchunk] Could not write proxy cache " << cache_path_ << "\n";
+            return;
+        }
+        out << "# proxchunk proxy cache\n";
+        for (const auto& p : snap)
+        {
+            if (!p.alive)
+            {
+                continue;
+            }
+            out << p.address << ' ' << p.speed_mbps << '\n';
+        }
+        std::cerr << "[proxchunk] Saved " << snap.size() << " proxies to " << cache_path_ << "\n";
     }
 
     [[nodiscard]] static std::vector<std::string>
@@ -402,10 +590,10 @@ private:
         style.gradient_start = tui::make_rgb(220, 160, 40);
         style.gradient_end = tui::make_rgb(40, 200, 120);
         style.percent_inside = true;
+        BarLayout proxy_bars;
         if (use_bar)
         {
-            std::cout << tui::cursor_hide;
-            setvbuf(stdout, nullptr, _IONBF, 0);
+            proxy_bars.begin(1);
         }
 
         auto draw = [&]() {
@@ -414,9 +602,9 @@ private:
                           curl_ok);
             if (use_bar)
             {
+                proxy_bars.go_line(0);
                 tui::progress_bar(msg, static_cast<long long>(completed),
                                   static_cast<long long>(total), 42, style);
-                std::cout.flush();
             }
             else
             {
@@ -522,10 +710,10 @@ private:
             char msg[80];
             std::snprintf(msg, sizeof(msg), "proxies  live %zu  curl-ok %zu", tested.size(),
                           curl_ok);
+            proxy_bars.go_line(0);
             tui::progress_bar(msg, static_cast<long long>(total),
                               static_cast<long long>(total), 42, style);
-            std::cout << '\n' << tui::cursor_show;
-            std::cout.flush();
+            proxy_bars.finish();
         }
         else
         {
@@ -539,6 +727,8 @@ private:
     std::size_t               max_keep_;
     int                       refresh_sec_;
     std::string               test_url_;
+    fs::path                  cache_path_;
+    bool                      use_cache_ = true;
     std::vector<Proxy>        pool_;
     mutable std::shared_mutex mutex_;
     std::jthread              updater_;
@@ -675,9 +865,104 @@ probe_file(const std::string& url)
     return info;
 }
 
+/** Width of "255.255.255.255" — IPv4 field is always this wide so bars do not jump. */
+static constexpr int kIpv4FieldWidth = 15;
+
+/**
+ * @brief Write a 15-char IPv4 field (space-padded) into @p out (16 bytes with NUL).
+ *
+ * Strips scheme and port from a proxy URL (`http://1.2.3.4:8080` → `1.2.3.4`).
+ */
+static void
+format_ipv4_field(char out[kIpv4FieldWidth + 1], std::string_view addr)
+{
+    std::memset(out, ' ', static_cast<std::size_t>(kIpv4FieldWidth));
+    out[kIpv4FieldWidth] = '\0';
+    if (addr.empty())
+    {
+        return;
+    }
+    auto scheme = addr.find("://");
+    if (scheme != std::string_view::npos)
+    {
+        addr.remove_prefix(scheme + 3);
+    }
+    auto slash = addr.find('/');
+    if (slash != std::string_view::npos)
+    {
+        addr = addr.substr(0, slash);
+    }
+    auto colon = addr.find(':');
+    if (colon != std::string_view::npos)
+    {
+        addr = addr.substr(0, colon);
+    }
+    const std::size_t n = std::min(addr.size(), static_cast<std::size_t>(kIpv4FieldWidth));
+    if (n > 0)
+    {
+        std::memcpy(out, addr.data(), n);
+    }
+}
+
+struct SlotProgress
+{
+    std::atomic<int>           chunk_id{-1};
+    std::atomic<std::int64_t>  now{0};
+    std::atomic<std::int64_t>  want{0};
+    mutable std::mutex         ip_mu;
+    char                       ip[kIpv4FieldWidth + 1]{};
+    std::atomic<std::int64_t>  last_byte{0};
+    std::atomic<std::int64_t>  last_move_ms{0};
+
+    SlotProgress()
+    {
+        format_ipv4_field(ip, "");
+    }
+
+    void set_ip(std::string_view addr)
+    {
+        std::lock_guard g(ip_mu);
+        format_ipv4_field(ip, addr);
+    }
+
+    void copy_ip(char out[kIpv4FieldWidth + 1]) const
+    {
+        std::lock_guard g(ip_mu);
+        std::memcpy(out, ip, static_cast<std::size_t>(kIpv4FieldWidth) + 1);
+    }
+};
+
+static int
+chunk_xfer(void* clientp, curl_off_t /*dltotal*/, curl_off_t dlnow, curl_off_t /*ultotal*/,
+           curl_off_t /*ulnow*/)
+{
+    auto* s = static_cast<SlotProgress*>(clientp);
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+    if (dlnow > s->last_byte.load(std::memory_order_relaxed))
+    {
+        s->last_byte.store(dlnow, std::memory_order_relaxed);
+        s->last_move_ms.store(now_ms, std::memory_order_relaxed);
+    }
+    else
+    {
+        const auto t0 = s->last_move_ms.load(std::memory_order_relaxed);
+        if (t0 > 0 && now_ms - t0 > 8000)
+        {
+            return 1; /* abort: stalled > 8 s */
+        }
+    }
+    if (dlnow >= 0)
+    {
+        s->now.store(static_cast<std::int64_t>(dlnow), std::memory_order_relaxed);
+    }
+    return 0;
+}
+
 [[nodiscard]] static bool
 download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::string& proxy,
-               const fs::path& part_path, std::atomic<std::int64_t>& bytes_done)
+               const fs::path& part_path, SlotProgress* slot)
 {
     CURL* c = curl_easy_init();
     if (!c)
@@ -705,14 +990,31 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
     curl_easy_setopt(c, CURLOPT_RANGE, range.c_str());
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_to_file);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 0L);
-    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
-    curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 1024L);
-    curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
+    const std::int64_t want = ch.end - ch.start + 1;
+    /* Drop a crawl before it occupies a worker for minutes (was 1 KiB/s for 30 s). */
+    const long timeout_s = std::max(45L, static_cast<long>(want / (32 * 1024) + 20));
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, timeout_s);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 16L * 1024L);
+    curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 8L);
+    if (slot != nullptr)
+    {
+        slot->last_byte.store(0);
+        slot->last_move_ms.store(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    }
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(c, CURLOPT_USERAGENT, kUserAgent);
     curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    if (slot != nullptr)
+    {
+        curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, chunk_xfer);
+        curl_easy_setopt(c, CURLOPT_XFERINFODATA, slot);
+    }
 
     CURLcode res = curl_easy_perform(c);
 
@@ -724,7 +1026,6 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
     fclose(f);
     curl_easy_cleanup(c);
 
-    const std::int64_t want = ch.end - ch.start + 1;
     if (res != CURLE_OK || (code != 206 && code != 200)
         || downloaded < static_cast<curl_off_t>(want * 95 / 100))
     {
@@ -732,7 +1033,10 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
         return false;
     }
 
-    bytes_done.fetch_add(static_cast<std::int64_t>(downloaded), std::memory_order_relaxed);
+    if (slot != nullptr)
+    {
+        slot->now.store(static_cast<std::int64_t>(downloaded), std::memory_order_relaxed);
+    }
     return true;
 }
 
@@ -743,6 +1047,7 @@ struct RunOptions
     std::int64_t limit_bytes = 0; ///< 0 = full file
     bool direct         = false;
     bool progress       = true;
+    bool show_proxies   = false;
 };
 
 [[nodiscard]] static bool
@@ -788,71 +1093,124 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
     std::atomic<std::int64_t> bytes_done{0};
     std::atomic<int>          finished{0};
     std::atomic<int>          failed{0};
-    std::mutex                work_mtx;
-    std::size_t               next_chunk = 0;
+    std::mutex work_mtx;
+    struct Job
+    {
+        proxchunk::chunk ch;
+        int              attempts = 0;
+    };
+    std::deque<Job> jobs;
+    for (const auto& c : chunks)
+    {
+        jobs.push_back(Job{c, 0});
+    }
+    std::atomic<int> inflight{0};
+
+    int n_workers = std::min(opt.max_concurrent, static_cast<int>(chunks.size()));
+    n_workers = std::max(1, n_workers);
+    std::vector<SlotProgress> slots(chunks.size());
+    for (std::size_t i = 0; i < chunks.size(); ++i)
+    {
+        slots[i].chunk_id.store(chunks[i].id);
+        slots[i].want.store(chunks[i].end - chunks[i].start + 1);
+        slots[i].now.store(0);
+    }
 
     auto worker_fn = [&]() {
         while (true)
         {
-            proxchunk::chunk ch;
+            Job job;
             {
-                std::lock_guard g(work_mtx);
-                if (next_chunk >= chunks.size())
+                std::unique_lock lock(work_mtx);
+                if (jobs.empty())
                 {
-                    return;
+                    if (inflight.load() == 0)
+                    {
+                        return;
+                    }
+                    lock.unlock();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    continue;
                 }
-                ch = chunks[next_chunk++];
+                job = jobs.front();
+                jobs.pop_front();
+                inflight.fetch_add(1);
             }
 
-            bool ok = false;
-            for (int attempt = 0; attempt < 6 && !ok; ++attempt)
+            const proxchunk::chunk ch = job.ch;
+            const std::int64_t want = ch.end - ch.start + 1;
+            auto& sp = slots[static_cast<std::size_t>(ch.id)];
+
+            std::string proxy_addr;
+            std::optional<Proxy> px;
+            if (!opt.direct && pool != nullptr)
             {
-                std::string proxy_addr;
-                std::optional<Proxy> px;
-                if (!opt.direct && pool != nullptr)
+                for (int w = 0; w < 40 && !px; ++w)
                 {
                     px = pool->acquire();
                     if (!px)
                     {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                        continue;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(250));
                     }
-                    proxy_addr = px->address;
                 }
+                if (px)
+                {
+                    proxy_addr = px->address;
+                    sp.set_ip(proxy_addr);
+                }
+            }
+            else
+            {
+                sp.set_ip("direct");
+            }
+
+            bool ok = false;
+            if (opt.direct || px)
+            {
                 fs::path part = tmpdir / ("part." + std::to_string(ch.id));
+                sp.now.store(0);
                 auto t0 = std::chrono::steady_clock::now();
-                ok = download_chunk(url, ch, proxy_addr, part, bytes_done);
+                ok = download_chunk(url, ch, proxy_addr, part, &sp);
                 auto secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
                                 .count();
                 double mbps = 0.0;
                 if (ok && secs > 0.01)
                 {
-                    mbps = (static_cast<double>(ch.end - ch.start + 1) / (1024.0 * 1024.0)) / secs;
+                    mbps = (static_cast<double>(want) / (1024.0 * 1024.0)) / secs;
                 }
                 if (px)
                 {
                     pool->release(*px, ok, mbps);
                 }
-                if (!ok)
-                {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                }
             }
 
             if (ok)
             {
+                sp.now.store(want);
+                bytes_done.fetch_add(want);
                 finished.fetch_add(1);
             }
             else
             {
-                failed.fetch_add(1);
-                std::cerr << "[proxchunk] Failed chunk " << ch.id << " after retries\n";
+                sp.now.store(0);
+                job.attempts++;
+                if (job.attempts < 8)
+                {
+                    std::cerr << "[proxchunk] Requeue chunk " << ch.id << " (try "
+                              << job.attempts + 1 << "/8)\n";
+                    std::lock_guard g(work_mtx);
+                    jobs.push_back(job);
+                }
+                else
+                {
+                    failed.fetch_add(1);
+                    std::cerr << "[proxchunk] Failed chunk " << ch.id << " after retries\n";
+                }
             }
+            inflight.fetch_sub(1);
         }
     };
 
-    int n_workers = std::min(opt.max_concurrent, static_cast<int>(chunks.size()));
-    n_workers = std::max(1, n_workers);
     std::vector<std::jthread> workers;
     for (int i = 0; i < n_workers; ++i)
     {
@@ -860,44 +1218,83 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
     }
 
     const bool use_bar = opt.progress && isatty(STDOUT_FILENO);
-    if (use_bar)
-    {
-        std::cout << tui::cursor_hide;
-        setvbuf(stdout, nullptr, _IONBF, 0);
-    }
 
-    tui::progress_bar_style style = tui::progress_bar_styles::blocks_smooth();
-    style.use_gradient = true;
-    style.gradient_start = tui::make_rgb(30, 180, 90);
-    style.gradient_end = tui::make_rgb(40, 200, 255);
-    style.percent_inside = true;
+    tui::progress_bar_style chunk_style = tui::progress_bar_styles::blocks_smooth();
+    chunk_style.use_gradient = true;
+    chunk_style.gradient_start = tui::make_rgb(30, 180, 90);
+    chunk_style.gradient_end = tui::make_rgb(40, 200, 255);
+    chunk_style.percent_inside = true;
+
+    tui::progress_bar_style total_style = chunk_style;
+    total_style.gradient_start = tui::make_rgb(220, 160, 40);
+    total_style.gradient_end = tui::make_rgb(40, 200, 120);
 
     const auto t_start = std::chrono::steady_clock::now();
     const int need = static_cast<int>(chunks.size());
-    while (finished.load() + failed.load() < need)
+    const int n_bars = static_cast<int>(chunks.size());
+    BarLayout chunk_bars;
+    if (use_bar)
     {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        const double done = static_cast<double>(bytes_done.load());
+        chunk_bars.begin(n_bars + 1);
+    }
+
+    auto live_bytes = [&]() -> std::int64_t {
+        std::int64_t n = 0;
+        for (const auto& s : slots)
+        {
+            n += s.now.load();
+        }
+        return n;
+    };
+
+    auto draw_bars = [&]() {
+        const std::int64_t live = live_bytes();
         const auto elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
-        const double speed = elapsed > 0.1 ? (done / (1024.0 * 1024.0)) / elapsed : 0.0;
+        const double speed = elapsed > 0.1 ? (static_cast<double>(live) / (1024.0 * 1024.0)) / elapsed
+                                           : 0.0;
         if (use_bar)
         {
-            char msg[96];
-            std::snprintf(msg, sizeof(msg), "%.2f MB/s  %d/%zu", speed, finished.load(),
+            for (int i = 0; i < n_bars; ++i)
+            {
+                const std::int64_t now = slots[static_cast<std::size_t>(i)].now.load();
+                const std::int64_t want = slots[static_cast<std::size_t>(i)].want.load();
+                char msg[64];
+                if (opt.show_proxies)
+                {
+                    char ip[kIpv4FieldWidth + 1];
+                    slots[static_cast<std::size_t>(i)].copy_ip(ip);
+                    std::snprintf(msg, sizeof(msg), "%s chunk %d", ip, i);
+                }
+                else
+                {
+                    std::snprintf(msg, sizeof(msg), "chunk %d", i);
+                }
+                chunk_bars.go_line(i);
+                tui::progress_bar(msg, now, want > 0 ? want : 1, 36, chunk_style);
+            }
+            char tmsg[80];
+            std::snprintf(tmsg, sizeof(tmsg), "total  %.2f MB/s  %d/%zu", speed, finished.load(),
                           chunks.size());
-            tui::progress_bar(msg, bytes_done.load(), download_size, 42, style);
-            std::cout.flush();
+            chunk_bars.go_line(n_bars);
+            tui::progress_bar(tmsg, live, download_size, 36, total_style);
         }
         else
         {
-            const double pct = 100.0 * done / static_cast<double>(download_size);
+            const double pct = 100.0 * static_cast<double>(live) / static_cast<double>(download_size);
             std::fprintf(stderr, "\r[proxchunk] %.1f%%  %.2f MB/s  %d/%zu chunks   ", pct, speed,
                          finished.load(), chunks.size());
             std::fflush(stderr);
         }
+    };
+
+    while (finished.load() + failed.load() < need)
+    {
+        draw_bars();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
     workers.clear();
+    draw_bars();
 
     const auto elapsed =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
@@ -907,11 +1304,7 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
 
     if (use_bar)
     {
-        char msg[96];
-        std::snprintf(msg, sizeof(msg), "%.2f MB/s  %d/%zu", speed, finished.load(), chunks.size());
-        tui::progress_bar(msg, bytes_done.load(), download_size, 42, style);
-        std::cout << '\n' << tui::cursor_show;
-        std::cout.flush();
+        chunk_bars.finish();
     }
     else
     {
@@ -982,6 +1375,8 @@ usage(const char* prog)
         << "      --limit-mb <MB>   Download only the first MB (0 = full file)\n"
         << "      --direct          Single-IP download (no proxies)\n"
         << "      --no-progress     Do not draw the TUI progress bar\n"
+        << "      --no-cache        Do not load/save ~/.cache/proxchunk/proxies.txt\n"
+        << "      --show-proxies    Prefix each chunk bar with a 15-char IPv4 field\n"
         << "  -h, --help            Show this help\n"
         << "  -v, --version         Print version\n"
         << "\n"
@@ -1005,6 +1400,7 @@ main(int argc, char* argv[])
     int max_proxies = 40;
     int refresh_sec = 180;
     RunOptions opt;
+    bool use_cache = true;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -1059,6 +1455,14 @@ main(int argc, char* argv[])
         {
             opt.progress = false;
         }
+        else if (a == "--no-cache")
+        {
+            use_cache = false;
+        }
+        else if (a == "--show-proxies")
+        {
+            opt.show_proxies = true;
+        }
         else if (a[0] != '-')
         {
             url = a;
@@ -1106,7 +1510,8 @@ main(int argc, char* argv[])
     const char* test_url = url.starts_with("https://")
                                ? "https://speed.cloudflare.com/__down?bytes=65536"
                                : "http://speedtest.tele2.net/100KB.zip";
-    ProxyPool pool(static_cast<std::size_t>(max_proxies), refresh_sec, test_url);
+    ProxyPool pool(static_cast<std::size_t>(max_proxies), refresh_sec, test_url,
+                   default_proxy_cache_path(), use_cache);
     pool.start();
 
     for (int i = 0; i < 45 && pool.size() < 3; ++i)
