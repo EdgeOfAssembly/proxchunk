@@ -38,12 +38,34 @@
 #include <vector>
 
 #ifndef PROXCHUNK_VERSION
-#define PROXCHUNK_VERSION "1.4"
+#define PROXCHUNK_VERSION "1.5"
 #endif
 
 namespace fs = std::filesystem;
 
 static constexpr const char* kUserAgent = "proxchunk/" PROXCHUNK_VERSION;
+
+[[nodiscard]] static bool
+is_socks_proxy(std::string_view proxy)
+{
+    return proxy.starts_with("socks5://") || proxy.starts_with("socks5h://")
+           || proxy.starts_with("socks4://") || proxy.starts_with("socks4a://");
+}
+
+/** HTTP proxies need CONNECT for HTTPS; SOCKS5 already tunnels TCP. */
+static void
+apply_curl_proxy(CURL* c, const std::string& proxy, bool target_https)
+{
+    if (proxy.empty())
+    {
+        return;
+    }
+    curl_easy_setopt(c, CURLOPT_PROXY, proxy.c_str());
+    if (target_https && !is_socks_proxy(proxy))
+    {
+        curl_easy_setopt(c, CURLOPT_HTTPPROXYTUNNEL, 1L);
+    }
+}
 
 /** Pin a block of progress-bar rows and CUP to each on update (no newlines). */
 struct BarLayout
@@ -168,12 +190,15 @@ class ProxyPool
 {
 public:
     explicit ProxyPool(std::size_t max_keep, int refresh_sec, std::string test_url,
-                       fs::path cache_path, bool use_cache)
+                       fs::path cache_path, bool use_cache, bool use_tor,
+                       std::vector<std::string> extra_proxies)
         : max_keep_(max_keep)
         , refresh_sec_(refresh_sec)
         , test_url_(std::move(test_url))
         , cache_path_(std::move(cache_path))
         , use_cache_(use_cache)
+        , use_tor_(use_tor)
+        , extra_proxies_(std::move(extra_proxies))
     {
         curl_global_init(CURL_GLOBAL_DEFAULT);
     }
@@ -301,21 +326,23 @@ private:
 
     void refresh()
     {
-        std::vector<std::string> candidates = fetch_all_lists();
+        std::vector<std::string> rest = fetch_all_lists();
+        std::sort(rest.begin(), rest.end());
+        rest.erase(std::unique(rest.begin(), rest.end()), rest.end());
+        {
+            std::mt19937 rng{std::random_device{}()};
+            std::shuffle(rest.begin(), rest.end(), rng);
+        }
+        auto locals = local_proxy_urls();
+        std::vector<std::string> candidates = locals;
+        candidates.insert(candidates.end(), rest.begin(), rest.end());
         if (candidates.empty())
         {
             std::cerr << "[proxchunk] No proxies fetched from sources\n";
             return;
         }
 
-        std::sort(candidates.begin(), candidates.end());
-        candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-        {
-            std::mt19937 rng{std::random_device{}()};
-            std::shuffle(candidates.begin(), candidates.end(), rng);
-        }
-
-        std::vector<Proxy> tested = test_proxies_multi(candidates);
+        std::vector<Proxy> tested = test_proxies_multi(candidates, locals.size());
 
         std::sort(tested.begin(), tested.end(), std::greater<>{});
         if (tested.size() > max_keep_)
@@ -347,7 +374,10 @@ private:
         }
         std::cerr << "[proxchunk] Loaded " << cached.size() << " proxies from " << cache_path_
                   << "\n";
-        std::vector<Proxy> tested = test_proxies_multi(cached);
+        auto locals = local_proxy_urls();
+        std::vector<std::string> candidates = locals;
+        candidates.insert(candidates.end(), cached.begin(), cached.end());
+        std::vector<Proxy> tested = test_proxies_multi(candidates, locals.size());
         std::sort(tested.begin(), tested.end(), std::greater<>{});
         if (tested.size() > max_keep_)
         {
@@ -437,7 +467,7 @@ private:
     }
 
     [[nodiscard]] static std::vector<std::string>
-    parse_proxy_body(const std::string& body)
+    parse_proxy_body(const std::string& body, std::string_view bare_scheme)
     {
         std::vector<std::string> out;
         std::istringstream iss(body);
@@ -455,7 +485,7 @@ private:
                 {
                     continue;
                 }
-                line = "http://" + line;
+                line = std::string(bare_scheme) + line;
             }
             out.push_back(std::move(line));
         }
@@ -463,23 +493,44 @@ private:
     }
 
     [[nodiscard]] std::vector<std::string>
+    local_proxy_urls() const
+    {
+        std::vector<std::string> loc = extra_proxies_;
+        if (use_tor_)
+        {
+            loc.insert(loc.begin(), "socks5h://127.0.0.1:9050");
+            loc.push_back("socks5h://127.0.0.1:9150");
+            std::cerr << "[proxchunk] Including local Tor socks5h://127.0.0.1:9050\n";
+        }
+        return loc;
+    }
+
+    [[nodiscard]] std::vector<std::string>
     fetch_all_lists()
     {
-        static const std::vector<std::string> sources = {
-            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-            "https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/http.txt",
-            "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
-            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-            "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
-            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=8000&country=all&ssl=all&anonymity=all",
-            "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
+        struct ListSource
+        {
+            const char* url;
+            const char* scheme; /* prepended when the list is host:port only */
         };
+        static const ListSource sources[] = {
+            {"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", "http://"},
+            {"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt", "http://"},
+            {"https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/http.txt", "http://"},
+            {"https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt", "http://"},
+            {"https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt", "http://"},
+            {"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt", "http://"},
+            {"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=8000&country=all&ssl=all&anonymity=all", "http://"},
+            {"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt", "http://"},
+            {"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt", "socks5h://"},
+            {"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt", "socks5h://"},
+        };
+        const std::size_t nsrc = sizeof(sources) / sizeof(sources[0]);
 
-        std::vector<std::string> bodies(sources.size());
+        std::vector<std::string> bodies(nsrc);
         std::vector<std::jthread> threads;
-        threads.reserve(sources.size());
-        for (std::size_t i = 0; i < sources.size(); ++i)
+        threads.reserve(nsrc);
+        for (std::size_t i = 0; i < nsrc; ++i)
         {
             threads.emplace_back([&, i]() {
                 CURL* c = curl_easy_init();
@@ -487,7 +538,7 @@ private:
                 {
                     return;
                 }
-                curl_easy_setopt(c, CURLOPT_URL, sources[i].c_str());
+                curl_easy_setopt(c, CURLOPT_URL, sources[i].url);
                 curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_to_string);
                 curl_easy_setopt(c, CURLOPT_WRITEDATA, &bodies[i]);
                 curl_easy_setopt(c, CURLOPT_TIMEOUT, 12L);
@@ -501,9 +552,9 @@ private:
         threads.clear();
 
         std::vector<std::string> all;
-        for (const auto& body : bodies)
+        for (std::size_t i = 0; i < nsrc; ++i)
         {
-            auto part = parse_proxy_body(body);
+            auto part = parse_proxy_body(bodies[i], sources[i].scheme);
             all.insert(all.end(), part.begin(), part.end());
         }
         return all;
@@ -519,7 +570,6 @@ private:
         }
         const bool https = test_url_.starts_with("https://");
         curl_easy_setopt(c, CURLOPT_URL, test_url_.c_str());
-        curl_easy_setopt(c, CURLOPT_PROXY, job->address.c_str());
         curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_null);
         curl_easy_setopt(c, CURLOPT_TIMEOUT, 8L);
         curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 3L);
@@ -528,9 +578,11 @@ private:
         curl_easy_setopt(c, CURLOPT_USERAGENT, kUserAgent);
         curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
         curl_easy_setopt(c, CURLOPT_PRIVATE, job);
-        if (https)
+        apply_curl_proxy(c, job->address, https);
+        if (is_socks_proxy(job->address))
         {
-            curl_easy_setopt(c, CURLOPT_HTTPPROXYTUNNEL, 1L);
+            curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
+            curl_easy_setopt(c, CURLOPT_TIMEOUT, 25L);
         }
         job->easy = c;
         job->t0 = std::chrono::steady_clock::now();
@@ -538,7 +590,8 @@ private:
     }
 
     [[nodiscard]] std::vector<Proxy>
-    test_proxies_multi(const std::vector<std::string>& candidates)
+    test_proxies_multi(const std::vector<std::string>& candidates,
+                       std::size_t must_test_first = 0)
     {
         constexpr int kMaxInflight = 96;
         const std::size_t total = candidates.size();
@@ -675,7 +728,7 @@ private:
                 --inflight;
                 ++completed;
 
-                if (tested.size() >= want_live)
+                if (tested.size() >= want_live && next >= must_test_first)
                 {
                     stop_adding = true;
                 }
@@ -729,6 +782,8 @@ private:
     std::string               test_url_;
     fs::path                  cache_path_;
     bool                      use_cache_ = true;
+    bool                      use_tor_ = true;
+    std::vector<std::string>  extra_proxies_;
     std::vector<Proxy>        pool_;
     mutable std::shared_mutex mutex_;
     std::jthread              updater_;
@@ -979,22 +1034,23 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
 
     std::string range = std::to_string(ch.start) + "-" + std::to_string(ch.end);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-    if (!proxy.empty())
-    {
-        curl_easy_setopt(c, CURLOPT_PROXY, proxy.c_str());
-        if (url.starts_with("https://"))
-        {
-            curl_easy_setopt(c, CURLOPT_HTTPPROXYTUNNEL, 1L);
-        }
-    }
+    apply_curl_proxy(c, proxy, url.starts_with("https://"));
     curl_easy_setopt(c, CURLOPT_RANGE, range.c_str());
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_to_file);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
     const std::int64_t want = ch.end - ch.start + 1;
     /* Drop a crawl before it occupies a worker for minutes (was 1 KiB/s for 30 s). */
     const long timeout_s = std::max(45L, static_cast<long>(want / (32 * 1024) + 20));
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, timeout_s);
-    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 8L);
+    if (is_socks_proxy(proxy))
+    {
+        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, std::max(timeout_s, 25L));
+    }
+    else
+    {
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, timeout_s);
+        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 8L);
+    }
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 16L * 1024L);
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 8L);
     if (slot != nullptr)
@@ -1377,6 +1433,8 @@ usage(const char* prog)
         << "      --no-progress     Do not draw the TUI progress bar\n"
         << "      --no-cache        Do not load/save ~/.cache/proxchunk/proxies.txt\n"
         << "      --show-proxies    Prefix each chunk bar with a 15-char IPv4 field\n"
+        << "      --socks <url>     Extra SOCKS/HTTP proxy (repeatable; e.g. socks5h://127.0.0.1:9050)\n"
+        << "      --no-tor          Do not auto-add local Tor on 127.0.0.1:9050\n"
         << "  -h, --help            Show this help\n"
         << "  -v, --version         Print version\n"
         << "\n"
@@ -1401,6 +1459,8 @@ main(int argc, char* argv[])
     int refresh_sec = 180;
     RunOptions opt;
     bool use_cache = true;
+    bool use_tor = true;
+    std::vector<std::string> extra_proxies;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -1463,6 +1523,14 @@ main(int argc, char* argv[])
         {
             opt.show_proxies = true;
         }
+        else if (a == "--no-tor")
+        {
+            use_tor = false;
+        }
+        else if (a == "--socks")
+        {
+            extra_proxies.emplace_back(need("--socks"));
+        }
         else if (a[0] != '-')
         {
             url = a;
@@ -1511,7 +1579,7 @@ main(int argc, char* argv[])
                                ? "https://speed.cloudflare.com/__down?bytes=65536"
                                : "http://speedtest.tele2.net/100KB.zip";
     ProxyPool pool(static_cast<std::size_t>(max_proxies), refresh_sec, test_url,
-                   default_proxy_cache_path(), use_cache);
+                   default_proxy_cache_path(), use_cache, use_tor, extra_proxies);
     pool.start();
 
     for (int i = 0; i < 45 && pool.size() < 3; ++i)

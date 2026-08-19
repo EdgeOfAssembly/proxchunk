@@ -46,6 +46,8 @@ Options:
       --no-progress     Do not draw the TUI progress bar
       --no-cache        Do not load/save ~/.cache/proxchunk/proxies.txt
       --show-proxies    Prefix each chunk bar with a 15-char IPv4 field
+      --socks <url>     Extra SOCKS/HTTP proxy (repeatable)
+      --no-tor          Do not auto-add local Tor (socks5h://127.0.0.1:9050)
   -h, --help            Show help
   -v, --version         Print version
 ```
