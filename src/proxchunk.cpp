@@ -2,24 +2,13 @@
  * proxchunk - Fully automatic multi-proxy Range chunked downloader
  * C++23, Linux CLI
  *
- * Features:
- *  - Fetches free HTTP proxy lists from multiple public sources
- *  - Concurrently tests and scores them by download speed
- *  - Drops dead / too-slow proxies
- *  - Keeps a sorted live pool (background refresher)
- *  - Probes target for Content-Length + Accept-Ranges
- *  - Splits file into chunks, downloads each chunk via a different proxy (own IP)
- *  - Writes parts then concatenates in correct order
- *  - Progress reporting
- *
- * Build:
- *   g++ -std=c++23 -O2 -Wall -Wextra -o proxchunk proxchunk.cpp -lcurl -pthread
- *
- * Usage:
- *   ./proxchunk <URL> [-o outfile] [-c concurrent] [-s chunk_mb] [-p max_proxies]
- *
- * License: MIT
+ * Fetches free HTTP proxies, scores them, splits the target into Range
+ * chunks, and downloads each chunk through a different IP.
  */
+
+#include "proxchunk/plan.hpp"
+
+#include <libsf/tui/progress_bar.h>
 
 #include <curl/curl.h>
 
@@ -34,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -42,12 +32,19 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unistd.h>
 #include <vector>
+
+#ifndef PROXCHUNK_VERSION
+#define PROXCHUNK_VERSION "1.2"
+#endif
 
 namespace fs = std::filesystem;
 
+static constexpr const char* kUserAgent = "proxchunk/" PROXCHUNK_VERSION;
+
 // ---------------------------------------------------------------------------
-// Helpers
+// libcurl callbacks
 // ---------------------------------------------------------------------------
 
 static size_t
@@ -68,30 +65,21 @@ static size_t
 write_to_file(char* ptr, size_t size, size_t nmemb, void* userdata)
 {
     auto* f = static_cast<FILE*>(userdata);
-    return fwrite(ptr, size, nmemb, f);
-}
-
-[[nodiscard]] static std::string
-trim(std::string_view sv)
-{
-    while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t' || sv.front() == '\r' || sv.front() == '\n'))
-        sv.remove_prefix(1);
-    while (!sv.empty() && (sv.back() == ' ' || sv.back() == '\t' || sv.back() == '\r' || sv.back() == '\n'))
-        sv.remove_suffix(1);
-    return std::string(sv);
+    return fwrite(ptr, 1, size * nmemb, f);
 }
 
 // ---------------------------------------------------------------------------
-// Proxy
+// Proxy pool
 // ---------------------------------------------------------------------------
 
 struct Proxy
 {
-    std::string address;          // e.g. "http://1.2.3.4:8080"
+    std::string address;
     double      speed_mbps = 0.0;
     int         latency_ms = 99999;
     int         fails      = 0;
     bool        alive      = true;
+    bool        busy       = false;
 
     bool operator>(const Proxy& o) const noexcept
     {
@@ -99,16 +87,13 @@ struct Proxy
     }
 };
 
-// ---------------------------------------------------------------------------
-// ProxyPool
-// ---------------------------------------------------------------------------
-
 class ProxyPool
 {
 public:
-    explicit ProxyPool(std::size_t max_keep = 40, int refresh_sec = 180)
+    explicit ProxyPool(std::size_t max_keep, int refresh_sec, std::string test_url)
         : max_keep_(max_keep)
         , refresh_sec_(refresh_sec)
+        , test_url_(std::move(test_url))
     {
         curl_global_init(CURL_GLOBAL_DEFAULT);
     }
@@ -122,15 +107,21 @@ public:
     void start()
     {
         if (running_.exchange(true))
+        {
             return;
-        refresh(); // initial
+        }
+        refresh();
         updater_ = std::jthread([this](std::stop_token st) {
             while (!st.stop_requested())
             {
                 for (int i = 0; i < refresh_sec_ && !st.stop_requested(); ++i)
+                {
                     std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
                 if (!st.stop_requested())
+                {
                     refresh();
+                }
             }
         });
     }
@@ -138,52 +129,59 @@ public:
     void stop()
     {
         if (!running_.exchange(false))
+        {
             return;
+        }
         if (updater_.joinable())
+        {
             updater_.request_stop();
+        }
     }
 
-    // Acquire a good proxy (thread-safe). Returns empty if none available.
     [[nodiscard]] std::optional<Proxy>
     acquire()
     {
         std::unique_lock lock(mutex_);
         for (auto& p : pool_)
         {
-            if (p.alive && p.fails < 3)
+            if (p.alive && !p.busy && p.fails < 3)
             {
-                Proxy copy = p;
-                p.fails++; // temporary mark as in-use-ish
-                return copy;
+                p.busy = true;
+                return p;
             }
         }
         return std::nullopt;
     }
 
-    void release(const Proxy& used, bool success, double measured = 0.0)
+    void release(const Proxy& used, bool success, double measured)
     {
         std::unique_lock lock(mutex_);
         for (auto& p : pool_)
         {
-            if (p.address == used.address)
+            if (p.address != used.address)
             {
-                if (success)
-                {
-                    p.fails = 0;
-                    if (measured > 0.0)
-                        p.speed_mbps = (p.speed_mbps * 0.7) + (measured * 0.3); // EMA
-                    p.alive = true;
-                }
-                else
-                {
-                    p.fails++;
-                    if (p.fails >= 4)
-                        p.alive = false;
-                }
-                break;
+                continue;
             }
+            p.busy = false;
+            if (success)
+            {
+                p.fails = 0;
+                if (measured > 0.0)
+                {
+                    p.speed_mbps = (p.speed_mbps * 0.7) + (measured * 0.3);
+                }
+                p.alive = true;
+            }
+            else
+            {
+                p.fails++;
+                if (p.fails >= 4)
+                {
+                    p.alive = false;
+                }
+            }
+            break;
         }
-        // keep sorted
         std::sort(pool_.begin(), pool_.end(), std::greater<>{});
     }
 
@@ -193,70 +191,87 @@ public:
         std::shared_lock lock(mutex_);
         std::size_t n = 0;
         for (const auto& p : pool_)
+        {
             if (p.alive)
+            {
                 ++n;
+            }
+        }
         return n;
     }
 
-    void force_refresh()
+    [[nodiscard]] double
+    top_speed_mbps() const
     {
-        refresh();
+        std::shared_lock lock(mutex_);
+        return pool_.empty() ? 0.0 : pool_.front().speed_mbps;
     }
 
 private:
+    struct TestJob
+    {
+        std::string address;
+        CURL*       easy = nullptr;
+        std::chrono::steady_clock::time_point t0{};
+    };
+
     void refresh()
     {
         std::vector<std::string> candidates = fetch_all_lists();
         if (candidates.empty())
         {
-            std::cerr << "[proxychunk] No proxies fetched from sources\n";
+            std::cerr << "[proxchunk] No proxies fetched from sources\n";
             return;
         }
 
-        // Dedup
         std::sort(candidates.begin(), candidates.end());
         candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+        {
+            std::mt19937 rng{std::random_device{}()};
+            std::shuffle(candidates.begin(), candidates.end(), rng);
+        }
 
-        // Concurrent test (limited parallelism)
-        constexpr int kTestThreads = 24;
-        std::vector<Proxy> tested;
-        tested.reserve(candidates.size());
-        std::mutex test_mtx;
-        std::atomic<std::size_t> idx{0};
+        std::vector<Proxy> tested = test_proxies_multi(candidates);
 
-        auto worker = [&]() {
-            while (true)
-            {
-                std::size_t i = idx.fetch_add(1);
-                if (i >= candidates.size())
-                    break;
-                Proxy p;
-                p.address = candidates[i];
-                if (test_proxy(p))
-                {
-                    std::lock_guard g(test_mtx);
-                    tested.push_back(std::move(p));
-                }
-            }
-        };
-
-        std::vector<std::jthread> threads;
-        for (int t = 0; t < kTestThreads; ++t)
-            threads.emplace_back(worker);
-        threads.clear(); // join
-
-        // Keep top N by speed
         std::sort(tested.begin(), tested.end(), std::greater<>{});
         if (tested.size() > max_keep_)
+        {
             tested.resize(max_keep_);
+        }
 
         {
             std::unique_lock lock(mutex_);
             pool_ = std::move(tested);
         }
 
-        std::cerr << "[proxychunk] Proxy pool refreshed: " << size() << " good proxies (top speed "
-                  << (pool_.empty() ? 0.0 : pool_.front().speed_mbps) << " MB/s)\n";
+        std::cerr << "[proxchunk] Proxy pool refreshed: " << size()
+                  << " good proxies (top " << top_speed_mbps() << " MB/s)\n";
+    }
+
+    [[nodiscard]] static std::vector<std::string>
+    parse_proxy_body(const std::string& body)
+    {
+        std::vector<std::string> out;
+        std::istringstream iss(body);
+        std::string line;
+        while (std::getline(iss, line))
+        {
+            line = proxchunk::trim(line);
+            if (line.empty() || line[0] == '#' || line[0] == '/')
+            {
+                continue;
+            }
+            if (line.find("://") == std::string::npos)
+            {
+                if (line.find(':') == std::string::npos)
+                {
+                    continue;
+                }
+                line = "http://" + line;
+            }
+            out.push_back(std::move(line));
+        }
+        return out;
     }
 
     [[nodiscard]] std::vector<std::string>
@@ -270,96 +285,264 @@ private:
             "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
             "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
             "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=8000&country=all&ssl=all&anonymity=all",
-            "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt"
+            "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
         };
 
-        std::vector<std::string> all;
-        for (const auto& url : sources)
+        std::vector<std::string> bodies(sources.size());
+        std::vector<std::jthread> threads;
+        threads.reserve(sources.size());
+        for (std::size_t i = 0; i < sources.size(); ++i)
         {
-            std::string body;
-            CURL* c = curl_easy_init();
-            if (!c)
-                continue;
-            curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-            curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_to_string);
-            curl_easy_setopt(c, CURLOPT_WRITEDATA, &body);
-            curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
-            curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-            curl_easy_setopt(c, CURLOPT_USERAGENT, "proxchunk/1.0");
-            CURLcode res = curl_easy_perform(c);
-            curl_easy_cleanup(c);
-            if (res != CURLE_OK)
-                continue;
-
-            std::istringstream iss(body);
-            std::string line;
-            while (std::getline(iss, line))
-            {
-                line = trim(line);
-                if (line.empty() || line[0] == '#' || line[0] == '/')
-                    continue;
-                // Accept ip:port or already has scheme
-                if (line.find("://") == std::string::npos)
+            threads.emplace_back([&, i]() {
+                CURL* c = curl_easy_init();
+                if (!c)
                 {
-                    // crude validation
-                    if (line.find(':') == std::string::npos)
-                        continue;
-                    line = "http://" + line;
+                    return;
                 }
-                all.push_back(std::move(line));
-            }
+                curl_easy_setopt(c, CURLOPT_URL, sources[i].c_str());
+                curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_to_string);
+                curl_easy_setopt(c, CURLOPT_WRITEDATA, &bodies[i]);
+                curl_easy_setopt(c, CURLOPT_TIMEOUT, 12L);
+                curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+                curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+                curl_easy_setopt(c, CURLOPT_USERAGENT, kUserAgent);
+                (void)curl_easy_perform(c);
+                curl_easy_cleanup(c);
+            });
+        }
+        threads.clear();
+
+        std::vector<std::string> all;
+        for (const auto& body : bodies)
+        {
+            auto part = parse_proxy_body(body);
+            all.insert(all.end(), part.begin(), part.end());
         }
         return all;
     }
 
-    [[nodiscard]] bool
-    test_proxy(Proxy& p)
+    CURL*
+    make_test_easy(TestJob* job)
     {
-        // Small test download through the proxy to measure real speed
-        const char* test_url = "http://speedtest.tele2.net/100KB.zip"; // ~100 KiB, HTTP, reliable
-
         CURL* c = curl_easy_init();
         if (!c)
-            return false;
-
-        curl_easy_setopt(c, CURLOPT_URL, test_url);
-        curl_easy_setopt(c, CURLOPT_PROXY, p.address.c_str());
+        {
+            return nullptr;
+        }
+        const bool https = test_url_.starts_with("https://");
+        curl_easy_setopt(c, CURLOPT_URL, test_url_.c_str());
+        curl_easy_setopt(c, CURLOPT_PROXY, job->address.c_str());
         curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_null);
-        curl_easy_setopt(c, CURLOPT_TIMEOUT, 12L);
-        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 6L);
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, 8L);
+        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 3L);
         curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
-        curl_easy_setopt(c, CURLOPT_USERAGENT, "proxchunk/1.0");
-
-        auto t0 = std::chrono::steady_clock::now();
-        CURLcode res = curl_easy_perform(c);
-        auto t1 = std::chrono::steady_clock::now();
-
-        double total = 0.0;
-        curl_easy_getinfo(c, CURLINFO_SIZE_DOWNLOAD_T, &total);
-        long http_code = 0;
-        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
-        curl_easy_cleanup(c);
-
-        if (res != CURLE_OK || http_code >= 400 || total < 1024.0)
-            return false;
-
-        double secs = std::chrono::duration<double>(t1 - t0).count();
-        if (secs < 0.01)
-            secs = 0.01;
-        p.speed_mbps = (total / (1024.0 * 1024.0)) / secs;
-        p.latency_ms = static_cast<int>(secs * 1000.0);
-        p.alive = true;
-        p.fails = 0;
-        return p.speed_mbps > 0.02; // keep only > ~20 KB/s
+        curl_easy_setopt(c, CURLOPT_USERAGENT, kUserAgent);
+        curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+        curl_easy_setopt(c, CURLOPT_PRIVATE, job);
+        if (https)
+        {
+            curl_easy_setopt(c, CURLOPT_HTTPPROXYTUNNEL, 1L);
+        }
+        job->easy = c;
+        job->t0 = std::chrono::steady_clock::now();
+        return c;
     }
 
-    std::size_t                 max_keep_;
-    int                         refresh_sec_;
-    std::vector<Proxy>          pool_;
-    mutable std::shared_mutex   mutex_;
-    std::jthread                updater_;
-    std::atomic<bool>           running_{false};
+    [[nodiscard]] std::vector<Proxy>
+    test_proxies_multi(const std::vector<std::string>& candidates)
+    {
+        constexpr int kMaxInflight = 96;
+        const std::size_t total = candidates.size();
+        const std::size_t want_live = max_keep_ + 8;
+        const curl_off_t min_bytes = 1024;
+
+        CURLM* multi = curl_multi_init();
+        if (!multi)
+        {
+            return {};
+        }
+        curl_multi_setopt(multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, (long)kMaxInflight);
+
+        std::vector<Proxy> tested;
+        std::size_t curl_ok = 0;
+        std::vector<std::unique_ptr<TestJob>> jobs;
+        jobs.reserve(std::min(total, static_cast<std::size_t>(kMaxInflight) * 2));
+
+        std::size_t next = 0;
+        std::size_t completed = 0;
+        int inflight = 0;
+        bool stop_adding = false;
+
+        auto add_one = [&]() -> bool {
+            if (stop_adding || next >= total || inflight >= kMaxInflight)
+            {
+                return false;
+            }
+            auto job = std::make_unique<TestJob>();
+            job->address = candidates[next++];
+            CURL* easy = make_test_easy(job.get());
+            if (!easy)
+            {
+                return true;
+            }
+            curl_multi_add_handle(multi, easy);
+            jobs.push_back(std::move(job));
+            ++inflight;
+            return true;
+        };
+
+        while (inflight < kMaxInflight && add_one())
+        {
+        }
+
+        const bool use_bar = isatty(STDOUT_FILENO);
+        tui::progress_bar_style style = tui::progress_bar_styles::blocks_smooth();
+        style.use_gradient = true;
+        style.gradient_start = tui::make_rgb(220, 160, 40);
+        style.gradient_end = tui::make_rgb(40, 200, 120);
+        style.percent_inside = true;
+        if (use_bar)
+        {
+            std::cout << tui::cursor_hide;
+            setvbuf(stdout, nullptr, _IONBF, 0);
+        }
+
+        auto draw = [&]() {
+            char msg[80];
+            std::snprintf(msg, sizeof(msg), "proxies  live %zu  curl-ok %zu", tested.size(),
+                          curl_ok);
+            if (use_bar)
+            {
+                tui::progress_bar(msg, static_cast<long long>(completed),
+                                  static_cast<long long>(total), 42, style);
+                std::cout.flush();
+            }
+            else
+            {
+                std::fprintf(stderr, "\r[proxchunk] %s  %zu/%zu   ", msg, completed, total);
+                std::fflush(stderr);
+            }
+        };
+        draw();
+
+        int still = 0;
+        curl_multi_perform(multi, &still);
+        while (still > 0)
+        {
+            int numfds = 0;
+            curl_multi_poll(multi, nullptr, 0, 150, &numfds);
+            curl_multi_perform(multi, &still);
+
+            int queued = 0;
+            while (CURLMsg* msg = curl_multi_info_read(multi, &queued))
+            {
+                if (msg->msg != CURLMSG_DONE)
+                {
+                    continue;
+                }
+                CURL* easy = msg->easy_handle;
+                char* priv = nullptr;
+                curl_easy_getinfo(easy, CURLINFO_PRIVATE, &priv);
+                auto* job = reinterpret_cast<TestJob*>(priv);
+
+                curl_off_t nbytes = 0;
+                long http_code = 0;
+                curl_easy_getinfo(easy, CURLINFO_SIZE_DOWNLOAD_T, &nbytes);
+                curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &http_code);
+
+                if (msg->data.result == CURLE_OK)
+                {
+                    ++curl_ok;
+                }
+                const bool ok = (msg->data.result == CURLE_OK && nbytes >= min_bytes
+                                 && (http_code == 0 || http_code == 200 || http_code == 206));
+                if (ok && job != nullptr)
+                {
+                    double secs = std::chrono::duration<double>(
+                                      std::chrono::steady_clock::now() - job->t0)
+                                      .count();
+                    if (secs < 0.01)
+                    {
+                        secs = 0.01;
+                    }
+                    Proxy p;
+                    p.address = job->address;
+                    p.speed_mbps =
+                        (static_cast<double>(nbytes) / (1024.0 * 1024.0)) / secs;
+                    p.latency_ms = static_cast<int>(secs * 1000.0);
+                    p.alive = true;
+                    if (p.speed_mbps > 0.02)
+                    {
+                        tested.push_back(std::move(p));
+                    }
+                }
+
+                curl_multi_remove_handle(multi, easy);
+                curl_easy_cleanup(easy);
+                if (job != nullptr)
+                {
+                    job->easy = nullptr;
+                }
+                --inflight;
+                ++completed;
+
+                if (tested.size() >= want_live)
+                {
+                    stop_adding = true;
+                }
+                if (!stop_adding)
+                {
+                    add_one();
+                }
+            }
+
+            if (stop_adding && inflight > 0)
+            {
+                // Drop remaining in-flight tests; we have enough live proxies.
+                for (auto& job : jobs)
+                {
+                    if (job && job->easy != nullptr)
+                    {
+                        curl_multi_remove_handle(multi, job->easy);
+                        curl_easy_cleanup(job->easy);
+                        job->easy = nullptr;
+                    }
+                }
+                inflight = 0;
+                still = 0;
+                completed = total;
+                break;
+            }
+            draw();
+        }
+
+        if (use_bar)
+        {
+            char msg[80];
+            std::snprintf(msg, sizeof(msg), "proxies  live %zu  curl-ok %zu", tested.size(),
+                          curl_ok);
+            tui::progress_bar(msg, static_cast<long long>(total),
+                              static_cast<long long>(total), 42, style);
+            std::cout << '\n' << tui::cursor_show;
+            std::cout.flush();
+        }
+        else
+        {
+            std::fprintf(stderr, "\n");
+        }
+
+        curl_multi_cleanup(multi);
+        return tested;
+    }
+
+    std::size_t               max_keep_;
+    int                       refresh_sec_;
+    std::string               test_url_;
+    std::vector<Proxy>        pool_;
+    mutable std::shared_mutex mutex_;
+    std::jthread              updater_;
+    std::atomic<bool>         running_{false};
 };
 
 // ---------------------------------------------------------------------------
@@ -377,32 +560,36 @@ probe_file(const std::string& url)
 {
     CURL* c = curl_easy_init();
     if (!c)
+    {
         return std::unexpected("curl_easy_init failed");
+    }
 
-    // Prefer HEAD, fall back to Range 0-0
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(c, CURLOPT_HEADER, 0L);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "proxchunk/1.0");
+    curl_easy_setopt(c, CURLOPT_USERAGENT, kUserAgent);
 
     CURLcode res = curl_easy_perform(c);
     FileInfo info;
 
     if (res == CURLE_OK)
     {
-        double cl = -1;
+        curl_off_t cl = -1;
         curl_easy_getinfo(c, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
         if (cl > 0)
+        {
             info.size = static_cast<std::int64_t>(cl);
+        }
     }
     curl_easy_cleanup(c);
 
-    // Always verify with a real Range request
     c = curl_easy_init();
     if (!c)
+    {
         return std::unexpected("curl_easy_init failed");
+    }
 
     std::string headers;
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
@@ -412,7 +599,7 @@ probe_file(const std::string& url)
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_null);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "proxchunk/1.0");
+    curl_easy_setopt(c, CURLOPT_USERAGENT, kUserAgent);
 
     res = curl_easy_perform(c);
     long code = 0;
@@ -420,15 +607,18 @@ probe_file(const std::string& url)
     curl_easy_cleanup(c);
 
     if (res != CURLE_OK)
+    {
         return std::unexpected(std::string("Range probe failed: ") + curl_easy_strerror(res));
+    }
 
     if (code == 206)
     {
         info.accepts_ranges = true;
-        // Parse Content-Range: bytes 0-0/TOTAL
         auto pos = headers.find("Content-Range:");
         if (pos == std::string::npos)
+        {
             pos = headers.find("content-range:");
+        }
         if (pos != std::string::npos)
         {
             auto slash = headers.find('/', pos);
@@ -453,7 +643,9 @@ probe_file(const std::string& url)
         {
             auto pos = headers.find("Content-Length:");
             if (pos == std::string::npos)
+            {
                 pos = headers.find("content-length:");
+            }
             if (pos != std::string::npos)
             {
                 auto start = headers.find_first_of("0123456789", pos);
@@ -476,26 +668,22 @@ probe_file(const std::string& url)
     }
 
     if (info.size <= 0)
+    {
         return std::unexpected("Could not determine file size");
+    }
 
     return info;
 }
 
-struct Chunk
-{
-    std::int64_t start = 0;
-    std::int64_t end   = 0; // inclusive
-    int          id    = 0;
-    bool         done  = false;
-};
-
 [[nodiscard]] static bool
-download_chunk(const std::string& url, const Chunk& ch, const Proxy& proxy,
+download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::string& proxy,
                const fs::path& part_path, std::atomic<std::int64_t>& bytes_done)
 {
     CURL* c = curl_easy_init();
     if (!c)
+    {
         return false;
+    }
 
     FILE* f = fopen(part_path.c_str(), "wb");
     if (!f)
@@ -506,7 +694,14 @@ download_chunk(const std::string& url, const Chunk& ch, const Proxy& proxy,
 
     std::string range = std::to_string(ch.start) + "-" + std::to_string(ch.end);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(c, CURLOPT_PROXY, proxy.address.c_str());
+    if (!proxy.empty())
+    {
+        curl_easy_setopt(c, CURLOPT_PROXY, proxy.c_str());
+        if (url.starts_with("https://"))
+        {
+            curl_easy_setopt(c, CURLOPT_HTTPPROXYTUNNEL, 1L);
+        }
+    }
     curl_easy_setopt(c, CURLOPT_RANGE, range.c_str());
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_to_file);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
@@ -516,19 +711,22 @@ download_chunk(const std::string& url, const Chunk& ch, const Proxy& proxy,
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "proxchunk/1.0");
+    curl_easy_setopt(c, CURLOPT_USERAGENT, kUserAgent);
+    curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
 
     CURLcode res = curl_easy_perform(c);
 
     long code = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
-    double downloaded = 0;
+    curl_off_t downloaded = 0;
     curl_easy_getinfo(c, CURLINFO_SIZE_DOWNLOAD_T, &downloaded);
 
     fclose(f);
     curl_easy_cleanup(c);
 
-    if (res != CURLE_OK || (code != 206 && code != 200) || downloaded < (ch.end - ch.start + 1) * 0.95)
+    const std::int64_t want = ch.end - ch.start + 1;
+    if (res != CURLE_OK || (code != 206 && code != 200)
+        || downloaded < static_cast<curl_off_t>(want * 95 / 100))
     {
         fs::remove(part_path);
         return false;
@@ -538,79 +736,107 @@ download_chunk(const std::string& url, const Chunk& ch, const Proxy& proxy,
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Main download orchestration
-// ---------------------------------------------------------------------------
+struct RunOptions
+{
+    int  max_concurrent = 16;
+    int  chunk_mb       = 8;
+    std::int64_t limit_bytes = 0; ///< 0 = full file
+    bool direct         = false;
+    bool progress       = true;
+};
 
 [[nodiscard]] static bool
-run_download(const std::string& url, const fs::path& output,
-             int max_concurrent, int chunk_mb, ProxyPool& pool)
+run_download(const std::string& url, const fs::path& output, const RunOptions& opt,
+             ProxyPool* pool)
 {
     auto probe = probe_file(url);
     if (!probe)
     {
-        std::cerr << "[proxychunk] Probe failed: " << probe.error() << "\n";
+        std::cerr << "[proxchunk] Probe failed: " << probe.error() << "\n";
         return false;
     }
-    const FileInfo& info = *probe;
-    std::cerr << "[proxychunk] File size: " << info.size << " bytes, Accept-Ranges: "
+    FileInfo info = *probe;
+    std::cerr << "[proxchunk] File size: " << info.size << " bytes, Accept-Ranges: "
               << (info.accepts_ranges ? "yes" : "no") << "\n";
 
     if (!info.accepts_ranges)
     {
-        std::cerr << "[proxychunk] Server does not support Range. Falling back to single connection (still through a proxy).\n";
-        std::cerr << "This MVP requires Range support.\n";
+        std::cerr << "[proxchunk] Server does not support Range. Aborting.\n";
         return false;
     }
 
-    const std::int64_t chunk_size = static_cast<std::int64_t>(chunk_mb) * 1024 * 1024;
-    std::vector<Chunk> chunks;
-    int id = 0;
-    for (std::int64_t off = 0; off < info.size; off += chunk_size)
+    std::int64_t download_size = info.size;
+    if (opt.limit_bytes > 0 && opt.limit_bytes < download_size)
     {
-        Chunk ch;
-        ch.start = off;
-        ch.end   = std::min(off + chunk_size - 1, info.size - 1);
-        ch.id    = id++;
-        chunks.push_back(ch);
+        download_size = opt.limit_bytes;
+        std::cerr << "[proxchunk] Limiting download to first " << download_size << " bytes\n";
     }
 
-    std::cerr << "[proxychunk] Split into " << chunks.size() << " chunks of ~" << chunk_mb << " MB\n";
+    const std::int64_t chunk_size = static_cast<std::int64_t>(opt.chunk_mb) * 1024 * 1024;
+    auto chunks = proxchunk::plan_chunks(download_size, chunk_size);
+    std::cerr << "[proxchunk] Split into " << chunks.size() << " chunks of ~" << opt.chunk_mb
+              << " MB\n";
 
-    // Create temp dir for parts
-    fs::path tmpdir = output.parent_path() / (".proxchunk_parts_" + std::to_string(std::random_device{}()));
+    fs::path tmpdir = output.parent_path();
+    if (tmpdir.empty())
+    {
+        tmpdir = ".";
+    }
+    tmpdir /= (".proxchunk_parts_" + std::to_string(std::random_device{}()));
     fs::create_directories(tmpdir);
 
     std::atomic<std::int64_t> bytes_done{0};
     std::atomic<int>          finished{0};
+    std::atomic<int>          failed{0};
     std::mutex                work_mtx;
     std::size_t               next_chunk = 0;
 
     auto worker_fn = [&]() {
         while (true)
         {
-            Chunk ch;
+            proxchunk::chunk ch;
             {
                 std::lock_guard g(work_mtx);
                 if (next_chunk >= chunks.size())
+                {
                     return;
+                }
                 ch = chunks[next_chunk++];
             }
 
             bool ok = false;
             for (int attempt = 0; attempt < 6 && !ok; ++attempt)
             {
-                auto px = pool.acquire();
-                if (!px)
+                std::string proxy_addr;
+                std::optional<Proxy> px;
+                if (!opt.direct && pool != nullptr)
                 {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                    continue;
+                    px = pool->acquire();
+                    if (!px)
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                        continue;
+                    }
+                    proxy_addr = px->address;
                 }
                 fs::path part = tmpdir / ("part." + std::to_string(ch.id));
-                ok = download_chunk(url, ch, *px, part, bytes_done);
-                pool.release(*px, ok, 0.0);
+                auto t0 = std::chrono::steady_clock::now();
+                ok = download_chunk(url, ch, proxy_addr, part, bytes_done);
+                auto secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
+                                .count();
+                double mbps = 0.0;
+                if (ok && secs > 0.01)
+                {
+                    mbps = (static_cast<double>(ch.end - ch.start + 1) / (1024.0 * 1024.0)) / secs;
+                }
+                if (px)
+                {
+                    pool->release(*px, ok, mbps);
+                }
                 if (!ok)
+                {
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                }
             }
 
             if (ok)
@@ -619,36 +845,90 @@ run_download(const std::string& url, const fs::path& output,
             }
             else
             {
-                std::cerr << "[proxychunk] Failed chunk " << ch.id << " after retries\n";
+                failed.fetch_add(1);
+                std::cerr << "[proxchunk] Failed chunk " << ch.id << " after retries\n";
             }
         }
     };
 
-    // Launch workers
-    int n_workers = std::min(max_concurrent, static_cast<int>(chunks.size()));
+    int n_workers = std::min(opt.max_concurrent, static_cast<int>(chunks.size()));
     n_workers = std::max(1, n_workers);
     std::vector<std::jthread> workers;
     for (int i = 0; i < n_workers; ++i)
+    {
         workers.emplace_back(worker_fn);
+    }
 
-    // Progress loop
+    const bool use_bar = opt.progress && isatty(STDOUT_FILENO);
+    if (use_bar)
+    {
+        std::cout << tui::cursor_hide;
+        setvbuf(stdout, nullptr, _IONBF, 0);
+    }
+
+    tui::progress_bar_style style = tui::progress_bar_styles::blocks_smooth();
+    style.use_gradient = true;
+    style.gradient_start = tui::make_rgb(30, 180, 90);
+    style.gradient_end = tui::make_rgb(40, 200, 255);
+    style.percent_inside = true;
+
     const auto t_start = std::chrono::steady_clock::now();
-    while (finished.load() < static_cast<int>(chunks.size()))
+    const int need = static_cast<int>(chunks.size());
+    while (finished.load() + failed.load() < need)
     {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        double done = static_cast<double>(bytes_done.load());
-        double pct  = 100.0 * done / static_cast<double>(info.size);
-        auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
-        double speed = elapsed > 0.1 ? (done / (1024.0 * 1024.0)) / elapsed : 0.0;
-        std::fprintf(stderr, "\r[proxychunk] %.1f%%  %.2f MB/s  %d/%zu chunks   ",
-                     pct, speed, finished.load(), chunks.size());
-        std::fflush(stderr);
+        const double done = static_cast<double>(bytes_done.load());
+        const auto elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
+        const double speed = elapsed > 0.1 ? (done / (1024.0 * 1024.0)) / elapsed : 0.0;
+        if (use_bar)
+        {
+            char msg[96];
+            std::snprintf(msg, sizeof(msg), "%.2f MB/s  %d/%zu", speed, finished.load(),
+                          chunks.size());
+            tui::progress_bar(msg, bytes_done.load(), download_size, 42, style);
+            std::cout.flush();
+        }
+        else
+        {
+            const double pct = 100.0 * done / static_cast<double>(download_size);
+            std::fprintf(stderr, "\r[proxchunk] %.1f%%  %.2f MB/s  %d/%zu chunks   ", pct, speed,
+                         finished.load(), chunks.size());
+            std::fflush(stderr);
+        }
     }
     workers.clear();
-    std::fprintf(stderr, "\n");
 
-    // Assemble
-    std::cerr << "[proxychunk] Assembling final file...\n";
+    const auto elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
+    const double speed = elapsed > 0.1
+                             ? (static_cast<double>(bytes_done.load()) / (1024.0 * 1024.0)) / elapsed
+                             : 0.0;
+
+    if (use_bar)
+    {
+        char msg[96];
+        std::snprintf(msg, sizeof(msg), "%.2f MB/s  %d/%zu", speed, finished.load(), chunks.size());
+        tui::progress_bar(msg, bytes_done.load(), download_size, 42, style);
+        std::cout << '\n' << tui::cursor_show;
+        std::cout.flush();
+    }
+    else
+    {
+        std::fprintf(stderr, "\n");
+    }
+
+    std::cerr << "[proxchunk] Aggregate: " << speed << " MB/s over " << elapsed << " s  ("
+              << bytes_done.load() << " bytes)\n";
+
+    if (failed.load() > 0)
+    {
+        std::cerr << "[proxchunk] " << failed.load() << " chunk(s) failed\n";
+        fs::remove_all(tmpdir);
+        return false;
+    }
+
+    std::cerr << "[proxchunk] Assembling final file...\n";
     std::ofstream out(output, std::ios::binary);
     if (!out)
     {
@@ -658,7 +938,7 @@ run_download(const std::string& url, const fs::path& output,
     }
     for (std::size_t i = 0; i < chunks.size(); ++i)
     {
-        fs::path part = tmpdir / ("part." + std::to_string(i));
+        fs::path part = tmpdir / ("part." + std::to_string(static_cast<int>(i)));
         if (!fs::exists(part))
         {
             std::cerr << "Missing part " << i << "\n";
@@ -673,14 +953,13 @@ run_download(const std::string& url, const fs::path& output,
     out.close();
     fs::remove_all(tmpdir);
 
-    // Verify size
-    if (fs::file_size(output) != static_cast<std::uintmax_t>(info.size))
+    if (fs::file_size(output) != static_cast<std::uintmax_t>(download_size))
     {
-        std::cerr << "[proxychunk] Size mismatch after assemble!\n";
+        std::cerr << "[proxchunk] Size mismatch after assemble!\n";
         return false;
     }
 
-    std::cerr << "[proxychunk] Done. Saved to " << output << "\n";
+    std::cerr << "[proxchunk] Done. Saved to " << output << "\n";
     return true;
 }
 
@@ -691,15 +970,23 @@ run_download(const std::string& url, const fs::path& output,
 static void
 usage(const char* prog)
 {
-    std::cerr << "Usage: " << prog << " <URL> [options]\n"
-              << "  -o <file>       Output path (default: basename of URL)\n"
-              << "  -c <N>          Max concurrent downloads (default: 16)\n"
-              << "  -s <MB>         Chunk size in megabytes (default: 8)\n"
-              << "  -p <N>          Max proxies to keep in pool (default: 40)\n"
-              << "  -r <sec>        Proxy refresh interval (default: 180)\n"
-              << "  -h              Help\n"
-              << "\nFully automatic: fetches, tests, sorts and refreshes free HTTP proxies,\n"
-              << "then downloads the file in parallel chunks through different IPs.\n";
+    std::cerr
+        << "Usage: " << prog << " [options] <URL>\n"
+        << "       " << prog << " <URL> [options]\n"
+        << "\n"
+        << "  -o, --output <file>   Output path (default: basename of URL)\n"
+        << "  -c, --concurrent <N>  Max concurrent chunk downloads (default: 16)\n"
+        << "  -s, --chunk-mb <MB>   Chunk size in megabytes (default: 8)\n"
+        << "  -p, --proxies <N>     Max proxies to keep in pool (default: 40)\n"
+        << "  -r, --refresh <sec>   Proxy refresh interval (default: 180)\n"
+        << "      --limit-mb <MB>   Download only the first MB (0 = full file)\n"
+        << "      --direct          Single-IP download (no proxies)\n"
+        << "      --no-progress     Do not draw the TUI progress bar\n"
+        << "  -h, --help            Show this help\n"
+        << "  -v, --version         Print version\n"
+        << "\n"
+        << "Fetches and scores free HTTP proxies, then downloads Range chunks\n"
+        << "through different IPs to beat per-IP throttle.\n";
 }
 
 int
@@ -708,7 +995,7 @@ main(int argc, char* argv[])
     if (argc < 2)
     {
         usage(argv[0]);
-        return 1;
+        return 0;
     }
 
     std::string url;
@@ -717,66 +1004,127 @@ main(int argc, char* argv[])
     int chunk_mb   = 8;
     int max_proxies = 40;
     int refresh_sec = 180;
+    RunOptions opt;
 
     for (int i = 1; i < argc; ++i)
     {
         std::string a = argv[i];
+        auto need = [&](const char* name) -> const char* {
+            if (i + 1 >= argc)
+            {
+                std::cerr << name << " requires an argument\n";
+                std::exit(1);
+            }
+            return argv[++i];
+        };
         if (a == "-h" || a == "--help")
         {
             usage(argv[0]);
             return 0;
         }
-        if (a == "-o" && i + 1 < argc)
-            out_path = argv[++i];
-        else if (a == "-c" && i + 1 < argc)
-            concurrent = std::atoi(argv[++i]);
-        else if (a == "-s" && i + 1 < argc)
-            chunk_mb = std::atoi(argv[++i]);
-        else if (a == "-p" && i + 1 < argc)
-            max_proxies = std::atoi(argv[++i]);
-        else if (a == "-r" && i + 1 < argc)
-            refresh_sec = std::atoi(argv[++i]);
+        if (a == "-v" || a == "--version")
+        {
+            std::cout << "proxchunk " << PROXCHUNK_VERSION << "\n";
+            return 0;
+        }
+        if (a == "-o" || a == "--output")
+        {
+            out_path = need("-o");
+        }
+        else if (a == "-c" || a == "--concurrent")
+        {
+            concurrent = std::atoi(need("-c"));
+        }
+        else if (a == "-s" || a == "--chunk-mb")
+        {
+            chunk_mb = std::atoi(need("-s"));
+        }
+        else if (a == "-p" || a == "--proxies")
+        {
+            max_proxies = std::atoi(need("-p"));
+        }
+        else if (a == "-r" || a == "--refresh")
+        {
+            refresh_sec = std::atoi(need("-r"));
+        }
+        else if (a == "--limit-mb")
+        {
+            opt.limit_bytes = static_cast<std::int64_t>(std::atoi(need("--limit-mb"))) * 1024 * 1024;
+        }
+        else if (a == "--direct")
+        {
+            opt.direct = true;
+        }
+        else if (a == "--no-progress")
+        {
+            opt.progress = false;
+        }
         else if (a[0] != '-')
+        {
             url = a;
+        }
         else
         {
             std::cerr << "Unknown option " << a << "\n";
+            usage(argv[0]);
             return 1;
         }
     }
 
+    opt.max_concurrent = concurrent;
+    opt.chunk_mb = chunk_mb;
+
     if (url.empty())
     {
         usage(argv[0]);
+        return 0;
+    }
+    if (concurrent < 1 || chunk_mb < 1 || max_proxies < 1)
+    {
+        std::cerr << "concurrent, chunk-mb, and proxies must be >= 1\n";
         return 1;
     }
 
     if (out_path.empty())
     {
-        auto pos = url.find_last_of('/');
-        out_path = (pos == std::string::npos) ? "download.bin" : url.substr(pos + 1);
-        if (out_path.empty() || out_path.find('?') != std::string::npos)
-            out_path = "download.bin";
+        out_path = proxchunk::default_output_name(url);
     }
 
-    std::cerr << "[proxychunk] Starting. Target: " << url << "\n";
-    std::cerr << "[proxychunk] Output: " << out_path << "  concurrent=" << concurrent
-              << "  chunk=" << chunk_mb << "MB\n";
+    std::cerr << "[proxchunk] Starting. Target: " << url << "\n";
+    std::cerr << "[proxchunk] Output: " << out_path << "  concurrent=" << concurrent
+              << "  chunk=" << chunk_mb << "MB"
+              << (opt.direct ? "  direct" : "") << "\n";
 
-    ProxyPool pool(static_cast<std::size_t>(max_proxies), refresh_sec);
+    if (opt.direct)
+    {
+        bool ok = run_download(url, out_path, opt, nullptr);
+        return ok ? 0 : 1;
+    }
+
+    // Probe CONNECT on a small HTTPS object — not the target (avoids
+    // hammering filesharing Range endpoints with thousands of tests).
+    const char* test_url = url.starts_with("https://")
+                               ? "https://speed.cloudflare.com/__down?bytes=65536"
+                               : "http://speedtest.tele2.net/100KB.zip";
+    ProxyPool pool(static_cast<std::size_t>(max_proxies), refresh_sec, test_url);
     pool.start();
 
-    // Wait a bit for initial pool
-    for (int i = 0; i < 30 && pool.size() < 3; ++i)
+    for (int i = 0; i < 45 && pool.size() < 3; ++i)
+    {
         std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (i % 5 == 4)
+        {
+            std::cerr << "[proxchunk] Waiting for proxy pool... " << pool.size() << " live\n";
+        }
+    }
 
     if (pool.size() == 0)
     {
-        std::cerr << "[proxychunk] No working proxies found. Aborting.\n";
+        std::cerr << "[proxchunk] No working proxies found. Aborting.\n";
         return 1;
     }
 
-    bool ok = run_download(url, out_path, concurrent, chunk_mb, pool);
+    bool ok = run_download(url, out_path, opt, &pool);
     pool.stop();
     return ok ? 0 : 1;
 }

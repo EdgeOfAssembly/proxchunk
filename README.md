@@ -36,13 +36,19 @@ make -j
 ./proxchunk <URL> [options]
 
 Options:
-  -o <file>       Output path (default: basename of URL)
-  -c <N>          Max concurrent downloads (default: 16)
-  -s <MB>         Chunk size in megabytes (default: 8)
-  -p <N>          Max proxies to keep in pool (default: 40)
-  -r <sec>        Proxy refresh interval in seconds (default: 180)
-  -h              Show help
+  -o, --output <file>   Output path (default: basename of URL)
+  -c, --concurrent <N>  Max concurrent chunk downloads (default: 16)
+  -s, --chunk-mb <MB>   Chunk size in megabytes (default: 8)
+  -p, --proxies <N>     Max proxies to keep in pool (default: 40)
+  -r, --refresh <sec>   Proxy refresh interval (default: 180)
+      --limit-mb <MB>   Download only the first MB (0 = full file)
+      --direct          Single-IP download (no proxies)
+      --no-progress     Do not draw the TUI progress bar
+  -h, --help            Show help
+  -v, --version         Print version
 ```
+
+Progress uses `#include <libsf/tui/progress_bar.h>` (`-I/usr/local/include`).
 
 ### Example
 
