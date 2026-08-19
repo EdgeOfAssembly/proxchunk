@@ -47,7 +47,19 @@ Options:
       --no-cache        Do not load/save ~/.cache/proxchunk/proxies.txt
       --show-proxies    Prefix each chunk bar with a 15-char IPv4 field
       --socks <url>     Extra SOCKS/HTTP proxy (repeatable)
+      --proxy-file <f>  Extra list: one ip:port or scheme://host:port per line
+      --no-user-proxies Do not load ~/.config/proxchunk/proxies.txt
       --no-tor          Do not auto-add local Tor (socks5h://127.0.0.1:9050)
+
+User proxies (optional file, created by you):
+
+```text
+# ~/.config/proxchunk/proxies.txt
+1.2.3.4:8080
+socks5h://10.0.0.1:1080
+```
+
+Bare `host:port` is HTTP. These are speed-tested first (with Tor) so they are not skipped.
   -h, --help            Show help
   -v, --version         Print version
 ```

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -35,6 +36,51 @@ trim(std::string_view sv)
         sv.remove_suffix(1);
     }
     return std::string(sv);
+}
+
+/**
+ * @brief One proxy list line → URL. Bare `host:port` gets @p default_scheme.
+ * Empty / comment lines return an empty string.
+ */
+[[nodiscard]] inline std::string
+normalize_proxy_line(std::string_view raw, std::string_view default_scheme = "http://")
+{
+    std::string line = trim(raw);
+    if (line.empty() || line[0] == '#' || line[0] == '/')
+    {
+        return {};
+    }
+    if (line.find("://") == std::string::npos)
+    {
+        if (line.find(':') == std::string::npos)
+        {
+            return {};
+        }
+        line.insert(0, default_scheme);
+    }
+    return line;
+}
+
+/** Read a user proxy list (one URL or host:port per line). */
+[[nodiscard]] inline std::vector<std::string>
+load_proxy_file(const std::string& path, std::string_view default_scheme = "http://")
+{
+    std::vector<std::string> out;
+    std::ifstream in(path);
+    if (!in)
+    {
+        return out;
+    }
+    std::string raw;
+    while (std::getline(in, raw))
+    {
+        std::string url = normalize_proxy_line(raw, default_scheme);
+        if (!url.empty())
+        {
+            out.push_back(std::move(url));
+        }
+    }
+    return out;
 }
 
 /**

@@ -38,7 +38,7 @@
 #include <vector>
 
 #ifndef PROXCHUNK_VERSION
-#define PROXCHUNK_VERSION "1.5"
+#define PROXCHUNK_VERSION "1.6"
 #endif
 
 namespace fs = std::filesystem;
@@ -140,6 +140,20 @@ default_proxy_cache_path()
         return fs::path(home) / ".cache" / "proxchunk" / "proxies.txt";
     }
     return fs::path("proxchunk.proxies");
+}
+
+[[nodiscard]] static fs::path
+default_user_proxy_list_path()
+{
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && xdg[0] != '\0')
+    {
+        return fs::path(xdg) / "proxchunk" / "proxies.txt";
+    }
+    if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0')
+    {
+        return fs::path(home) / ".config" / "proxchunk" / "proxies.txt";
+    }
+    return fs::path("proxies.txt");
 }
 
 // ---------------------------------------------------------------------------
@@ -1434,6 +1448,8 @@ usage(const char* prog)
         << "      --no-cache        Do not load/save ~/.cache/proxchunk/proxies.txt\n"
         << "      --show-proxies    Prefix each chunk bar with a 15-char IPv4 field\n"
         << "      --socks <url>     Extra SOCKS/HTTP proxy (repeatable; e.g. socks5h://127.0.0.1:9050)\n"
+        << "      --proxy-file <f>  Extra proxy list (ip:port or scheme://host:port per line)\n"
+        << "      --no-user-proxies Do not load ~/.config/proxchunk/proxies.txt\n"
         << "      --no-tor          Do not auto-add local Tor on 127.0.0.1:9050\n"
         << "  -h, --help            Show this help\n"
         << "  -v, --version         Print version\n"
@@ -1460,7 +1476,9 @@ main(int argc, char* argv[])
     RunOptions opt;
     bool use_cache = true;
     bool use_tor = true;
+    bool use_user_list = true;
     std::vector<std::string> extra_proxies;
+    std::vector<std::string> proxy_files;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -1529,7 +1547,19 @@ main(int argc, char* argv[])
         }
         else if (a == "--socks")
         {
-            extra_proxies.emplace_back(need("--socks"));
+            std::string u = proxchunk::normalize_proxy_line(need("--socks"));
+            if (!u.empty())
+            {
+                extra_proxies.push_back(std::move(u));
+            }
+        }
+        else if (a == "--proxy-file")
+        {
+            proxy_files.emplace_back(need("--proxy-file"));
+        }
+        else if (a == "--no-user-proxies")
+        {
+            use_user_list = false;
         }
         else if (a[0] != '-')
         {
@@ -1575,6 +1605,32 @@ main(int argc, char* argv[])
 
     // Probe CONNECT on a small HTTPS object — not the target (avoids
     // hammering filesharing Range endpoints with thousands of tests).
+    auto load_list = [&](const fs::path& p) {
+        auto rows = proxchunk::load_proxy_file(p.string());
+        if (!rows.empty())
+        {
+            std::cerr << "[proxchunk] Loaded " << rows.size() << " user proxies from " << p
+                      << "\n";
+            extra_proxies.insert(extra_proxies.end(), rows.begin(), rows.end());
+        }
+        else if (!p.empty() && fs::exists(p))
+        {
+            std::cerr << "[proxchunk] User proxy file empty or unreadable: " << p << "\n";
+        }
+    };
+    if (use_user_list)
+    {
+        load_list(default_user_proxy_list_path());
+    }
+    for (const auto& pf : proxy_files)
+    {
+        load_list(pf);
+        if (!fs::exists(pf))
+        {
+            std::cerr << "[proxchunk] --proxy-file not found: " << pf << "\n";
+        }
+    }
+
     const char* test_url = url.starts_with("https://")
                                ? "https://speed.cloudflare.com/__down?bytes=65536"
                                : "http://speedtest.tele2.net/100KB.zip";

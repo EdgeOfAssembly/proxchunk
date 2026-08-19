@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(proxchunk VERSION 1.5 LANGUAGES CXX)
+project(proxchunk VERSION 1.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

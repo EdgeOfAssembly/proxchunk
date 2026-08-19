@@ -33,6 +33,13 @@ main()
     assert(plan_chunks(0, 8).empty());
     assert(plan_chunks(8, 0).empty());
 
+    using proxchunk::normalize_proxy_line;
+    assert(normalize_proxy_line("").empty());
+    assert(normalize_proxy_line("  # comment").empty());
+    assert(normalize_proxy_line("1.2.3.4:8080") == "http://1.2.3.4:8080");
+    assert(normalize_proxy_line("socks5h://127.0.0.1:9050") == "socks5h://127.0.0.1:9050");
+    assert(normalize_proxy_line("  10.0.0.1:1080  ", "socks5h://") == "socks5h://10.0.0.1:1080");
+
     std::cout << "test_plan ok\n";
     return 0;
 }
