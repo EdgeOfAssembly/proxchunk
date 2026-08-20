@@ -9,8 +9,12 @@
 #include <curl/curl.h>
 
 #include <cstdio>
+#include <cstring>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <string>
 #include <string_view>
+#include <sys/socket.h>
 
 #ifndef PROXCHUNK_VERSION
 #define PROXCHUNK_VERSION "1.1"
@@ -44,6 +48,68 @@ is_socks_proxy(std::string_view proxy)
  * @param[in]     proxy       Proxy URL; empty is a no-op.
  * @param[in]     target_https True when the origin URL is https://.
  */
+/**
+ * @brief Kernel sockopts: TCP_NODELAY, QUICKACK, Fast Open, FAST/BBR/westwood.
+ *
+ * Failures are ignored (UNIX sockets, missing cc modules). TFO needs
+ * @c net.ipv4.tcp_fastopen client bit; congestion @c fast is used when loaded.
+ */
+inline int
+fast_tcp_sockopt(void* /*clientp*/, curl_socket_t fd, curlsocktype purpose)
+{
+    if (purpose != CURLSOCKTYPE_IPCXN)
+    {
+        return CURL_SOCKOPT_OK;
+    }
+    int one = 1;
+    (void)::setsockopt(static_cast<int>(fd), IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#ifdef TCP_QUICKACK
+    (void)::setsockopt(static_cast<int>(fd), IPPROTO_TCP, TCP_QUICKACK, &one, sizeof(one));
+#endif
+#ifdef TCP_FASTOPEN_CONNECT
+    (void)::setsockopt(static_cast<int>(fd), IPPROTO_TCP, TCP_FASTOPEN_CONNECT, &one,
+                       sizeof(one));
+#endif
+#ifndef TCP_CONGESTION
+#define TCP_CONGESTION 13
+#endif
+    static const char* const k_cc[] = {"fast", "bbr", "westwood"};
+    for (const char* cc : k_cc)
+    {
+        if (::setsockopt(static_cast<int>(fd), IPPROTO_TCP, TCP_CONGESTION, cc,
+                         static_cast<socklen_t>(std::strlen(cc)))
+            == 0)
+        {
+            break;
+        }
+    }
+    return CURL_SOCKOPT_OK;
+}
+
+/**
+ * @brief Enable Fast TCP / TFO / keepalive / Nagle-off on a curl easy handle.
+ */
+inline void
+apply_fast_tcp(CURL* c)
+{
+    if (c == nullptr)
+    {
+        return;
+    }
+    curl_easy_setopt(c, CURLOPT_TCP_NODELAY, 1L);
+    curl_easy_setopt(c, CURLOPT_TCP_KEEPALIVE, 1L);
+#ifdef CURLOPT_TCP_KEEPIDLE
+    curl_easy_setopt(c, CURLOPT_TCP_KEEPIDLE, 30L);
+#endif
+#ifdef CURLOPT_TCP_KEEPINTVL
+    curl_easy_setopt(c, CURLOPT_TCP_KEEPINTVL, 10L);
+#endif
+#ifdef CURLOPT_TCP_FASTOPEN
+    curl_easy_setopt(c, CURLOPT_TCP_FASTOPEN, 1L);
+#endif
+    curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, fast_tcp_sockopt);
+}
+
 inline void
 apply_curl_proxy(CURL* c, const std::string& proxy, bool target_https)
 {

@@ -540,6 +540,7 @@ ProxyEngine::fetch_all_lists()
             curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
             curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
             curl_easy_setopt(c, CURLOPT_USERAGENT, k_user_agent);
+            apply_fast_tcp(c);
             curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
             curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION,
                              +[](void* clientp, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int {
@@ -581,6 +582,7 @@ ProxyEngine::make_test_easy(TestJob* job)
     curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(c, CURLOPT_PRIVATE, job);
     apply_curl_proxy(c, job->address, https);
+    apply_fast_tcp(c);
     if (is_socks_proxy(job->address))
     {
         curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);

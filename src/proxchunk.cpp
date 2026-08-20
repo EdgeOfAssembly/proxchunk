@@ -48,6 +48,7 @@
 namespace fs = std::filesystem;
 
 using proxchunk::apply_curl_proxy;
+using proxchunk::apply_fast_tcp;
 using proxchunk::is_socks_proxy;
 using proxchunk::k_user_agent;
 using proxchunk::write_null;
@@ -162,8 +163,8 @@ probe_curl_common(CURL* c, const std::string& url, const std::string& proxy)
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(c, CURLOPT_USERAGENT, k_user_agent);
     apply_curl_proxy(c, proxy, url.starts_with("https://"));
-    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 5L);
-    curl_easy_setopt(c, CURLOPT_TCP_KEEPALIVE, 1L);
+    apply_fast_tcp(c);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
 }
 
 [[nodiscard]] static std::expected<FileInfo, std::string>
@@ -183,7 +184,8 @@ probe_file(const std::string& url, const std::string& proxy)
     curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, write_to_string);
     curl_easy_setopt(c, CURLOPT_HEADERDATA, &headers);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_null);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 6L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
 
     CURLcode res = curl_easy_perform(c);
     long code = 0;
@@ -391,12 +393,25 @@ chunk_xfer(void* clientp, curl_off_t /*dltotal*/, curl_off_t dlnow, curl_off_t /
     return 0;
 }
 
-[[nodiscard]] static bool
-download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::string& proxy,
-               const fs::path& part_path, SlotProgress* slot)
+static void
+setup_pipeline(CURL* c, const std::string& url, const std::string& proxy)
 {
-    CURL* c = curl_easy_init();
-    if (!c)
+    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+    apply_curl_proxy(c, proxy, url.starts_with("https://"));
+    apply_fast_tcp(c);
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(c, CURLOPT_USERAGENT, k_user_agent);
+    curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+    curl_easy_setopt(c, CURLOPT_FORBID_REUSE, 0L);
+    curl_easy_setopt(c, CURLOPT_FRESH_CONNECT, 0L);
+}
+
+[[nodiscard]] static bool
+download_chunk(CURL* c, const std::string& url, const proxchunk::chunk& ch,
+               const std::string& proxy, const fs::path& part_path, SlotProgress* slot)
+{
+    if (c == nullptr)
     {
         return false;
     }
@@ -416,7 +431,6 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
     const std::int64_t want = ch.end - ch.start + 1;
     if (have >= want)
     {
-        curl_easy_cleanup(c);
         if (slot != nullptr)
         {
             slot->now.store(want, std::memory_order_relaxed);
@@ -427,18 +441,15 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
     FILE* f = std::fopen(part_path.c_str(), have > 0 ? "ab" : "wb");
     if (!f)
     {
-        curl_easy_cleanup(c);
         return false;
     }
 
     const std::int64_t from = ch.start + have;
     std::string range = std::to_string(from) + "-" + std::to_string(ch.end);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-    apply_curl_proxy(c, proxy, url.starts_with("https://"));
     curl_easy_setopt(c, CURLOPT_RANGE, range.c_str());
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_to_file);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
-    /* Drop a crawl before it occupies a worker for minutes (was 1 KiB/s for 30 s). */
     const long timeout_s = std::max(45L, static_cast<long>(want / (32 * 1024) + 20));
     if (is_socks_proxy(proxy))
     {
@@ -461,13 +472,6 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch())
                 .count());
-    }
-    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, k_user_agent);
-    curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-    if (slot != nullptr)
-    {
         curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
         curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, chunk_xfer);
         curl_easy_setopt(c, CURLOPT_XFERINFODATA, slot);
@@ -481,7 +485,6 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
     curl_easy_getinfo(c, CURLINFO_SIZE_DOWNLOAD_T, &downloaded);
 
     fclose(f);
-    curl_easy_cleanup(c);
 
     std::int64_t on_disk = 0;
     {
@@ -553,8 +556,9 @@ probe_archive_org_metadata(const std::string& url)
     curl_easy_setopt(c, CURLOPT_USERAGENT, k_user_agent);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_to_string);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 8L);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
+    apply_fast_tcp(c);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
     const CURLcode res = curl_easy_perform(c);
     long code = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
@@ -579,49 +583,22 @@ probe_archive_org_metadata(const std::string& url)
 }
 
 [[nodiscard]] static std::expected<FileInfo, std::string>
-probe_via_client(const std::string& url, proxchunk::ProxyClient* client)
+probe_size_direct(const std::string& url)
 {
+    std::cerr << "[proxchunk] Probing file size (direct, no proxy)\n";
     if (auto ia = probe_archive_org_metadata(url); ia)
     {
         std::cerr << "[proxchunk] Size from archive.org metadata: " << ia->size << " bytes\n";
         return ia;
     }
-    if (proxchunk::ia_parse_download_url(url))
-    {
-        std::cerr << "[proxchunk] archive.org metadata unavailable, trying Range probe\n";
-    }
-    if (client == nullptr)
-    {
-        return probe_file(url, "");
-    }
-    std::string last = "no proxy available for probe";
-    for (int i = 0; i < 12; ++i)
-    {
-        auto p = client->acquire();
-        if (!p)
-        {
-            std::cerr << "[proxchunk] Waiting for a live proxy to probe file size...\n";
-            std::this_thread::sleep_for(std::chrono::milliseconds(400));
-            continue;
-        }
-        std::cerr << "[proxchunk] Probing size via " << p->url << "\n";
-        auto info = probe_file(url, p->url);
-        (void)client->release(p->url, static_cast<bool>(info), 0.0);
-        if (info)
-        {
-            return info;
-        }
-        last = info.error();
-        std::cerr << "[proxchunk] Probe via proxy failed: " << last << "\n";
-    }
-    return std::unexpected(last);
+    return probe_file(url, "");
 }
 
 [[nodiscard]] static bool
 run_download(const std::string& url, const fs::path& output, const RunOptions& opt,
              proxchunk::ProxyClient* client)
 {
-    auto probe = probe_via_client(url, opt.direct ? nullptr : client);
+    auto probe = probe_size_direct(url);
     if (!probe)
     {
         std::cerr << "[proxchunk] Probe failed: " << probe.error() << "\n";
@@ -692,6 +669,63 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
 
     auto worker_fn = [&](int worker_id) {
         auto& sp = slots[static_cast<std::size_t>(worker_id)];
+        CURL* easy = nullptr;
+        std::optional<proxchunk::acquired_proxy> pipe;
+        double last_mbps = 0.0;
+        auto drop_pipe = [&](bool ok) {
+            if (pipe && client != nullptr)
+            {
+                (void)client->release(pipe->url, ok, last_mbps);
+            }
+            pipe.reset();
+            if (easy != nullptr)
+            {
+                curl_easy_cleanup(easy);
+                easy = nullptr;
+            }
+        };
+        auto open_pipe = [&](const std::vector<std::string>& skip) -> bool {
+            if (easy != nullptr && (opt.direct || pipe))
+            {
+                return true;
+            }
+            drop_pipe(false);
+            if (opt.direct)
+            {
+                easy = curl_easy_init();
+                if (easy == nullptr)
+                {
+                    return false;
+                }
+                setup_pipeline(easy, url, "");
+                sp.set_ip("direct");
+                return true;
+            }
+            if (client == nullptr)
+            {
+                return false;
+            }
+            auto p = client->acquire(skip);
+            if (!p)
+            {
+                return false;
+            }
+            easy = curl_easy_init();
+            if (easy == nullptr)
+            {
+                (void)client->release(p->url, false, 0.0);
+                return false;
+            }
+            setup_pipeline(easy, url, p->url);
+            sp.set_ip(p->url);
+            if (!use_bar)
+            {
+                std::cerr << "[proxchunk] Pipeline via " << p->url << "\n";
+            }
+            pipe = std::move(p);
+            return true;
+        };
+
         while (true)
         {
             Job job;
@@ -701,6 +735,7 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 {
                     if (inflight.load() == 0)
                     {
+                        drop_pipe(true);
                         return;
                     }
                     lock.unlock();
@@ -719,44 +754,8 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
             sp.now.store(0, std::memory_order_relaxed);
             sp.active.store(true, std::memory_order_relaxed);
 
-            std::string proxy_addr;
-            std::optional<proxchunk::acquired_proxy> px;
-            if (!opt.direct && client != nullptr)
+            if (!open_pipe(job.tried))
             {
-                px = client->acquire(job.tried);
-                if (px)
-                {
-                    proxy_addr = px->url;
-                    sp.set_ip(proxy_addr);
-                    job.tried.push_back(px->url);
-                }
-            }
-            else
-            {
-                sp.set_ip("direct");
-            }
-
-            bool ok = false;
-            if (opt.direct || px)
-            {
-                fs::path part = tmpdir / ("part." + std::to_string(ch.id));
-                auto t0 = std::chrono::steady_clock::now();
-                ok = download_chunk(url, ch, proxy_addr, part, &sp);
-                auto secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
-                                .count();
-                double mbps = 0.0;
-                if (ok && secs > 0.01)
-                {
-                    mbps = (static_cast<double>(want) / (1024.0 * 1024.0)) / secs;
-                }
-                if (px)
-                {
-                    (void)client->release(px->url, ok, mbps);
-                }
-            }
-            else if (!opt.direct)
-            {
-                /* Pool empty: wait, do not burn a try. */
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 {
                     std::lock_guard g(work_mtx);
@@ -764,6 +763,21 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 }
                 inflight.fetch_sub(1);
                 continue;
+            }
+            if (pipe)
+            {
+                job.tried.push_back(pipe->url);
+            }
+
+            const fs::path part = tmpdir / ("part." + std::to_string(ch.id));
+            const auto t0 = std::chrono::steady_clock::now();
+            const std::string proxy_addr = pipe ? pipe->url : std::string{};
+            const bool ok = download_chunk(easy, url, ch, proxy_addr, part, &sp);
+            const auto secs =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            if (ok && secs > 0.01)
+            {
+                last_mbps = (static_cast<double>(want) / (1024.0 * 1024.0)) / secs;
             }
 
             if (ok)
@@ -775,6 +789,7 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
             }
             else
             {
+                drop_pipe(false);
                 sp.active.store(false, std::memory_order_relaxed);
                 job.attempts++;
                 constexpr int k_chunk_tries = 3;
@@ -794,7 +809,7 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                     if (!use_bar)
                     {
                         std::cerr << "[proxchunk] Failed chunk " << ch.id << " after "
-                                  << k_chunk_tries << " proxies\n";
+                                  << k_chunk_tries << " pipelines\n";
                     }
                 }
             }
