@@ -13,4 +13,5 @@ profile-before.txt
 profile-after.txt
 scripts/__pycache__/
 tmpcfg/
+proxchunk-musl-static
 

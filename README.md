@@ -26,12 +26,15 @@ Optimized release:
 make release
 ```
 
-Fully static release (`-static`, `libcurl.a`, plus `libnghttp2.a` /
-`libbrotlidec.a` from the local overlay with `USE=static-libs`):
+Fully static **musl** binary (portable across Linux distros; no glibc NSS):
 
 ```bash
-make release-static
+# Alpine chroot at /mnt/alpine — see scripts/build-musl-static.sh
+# Flags: -static -static-libgcc -static-libstdc++ -fno-pie -no-pie
 ```
+
+Gentoo glibc `-static` (`make release-static`) also produces a static ELF, but
+glibc warns about `getaddrinfo`/`dlopen`; prefer the musl build for shipping.
 
 ## Usage
 
