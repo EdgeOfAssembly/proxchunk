@@ -259,6 +259,37 @@ probe_file(const std::string& url, const std::string& proxy)
     return info;
 }
 
+/**
+ * Draw one bar. Byte totals go in the label; the widget is 0–100 so libsf's
+ * 32-bit reciprocal percent cannot stick at 99% when now==want.
+ */
+static void
+draw_byte_bar(const char* msg, std::int64_t now, std::int64_t want,
+              const tui::progress_bar_style& style)
+{
+    int pct = 0;
+    if (want > 0)
+    {
+        if (now >= want)
+        {
+            pct = 100;
+        }
+        else
+        {
+            pct = static_cast<int>((now * 100) / want);
+            if (now > 0 && pct == 0)
+            {
+                pct = 1;
+            }
+        }
+    }
+    char full[128];
+    std::snprintf(full, sizeof(full), "%s  %lld/%lld", msg, static_cast<long long>(now),
+                  static_cast<long long>(want > 0 ? want : 1));
+    auto st = tui::progress_bar_init(full, 100, 28, style);
+    tui::progress_bar_update(st, pct);
+}
+
 /** Width of "255.255.255.255" — IPv4 field is always this wide so bars do not jump. */
 static constexpr int kIpv4FieldWidth = 15;
 
@@ -336,6 +367,14 @@ chunk_xfer(void* clientp, curl_off_t /*dltotal*/, curl_off_t dlnow, curl_off_t /
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now().time_since_epoch())
                             .count();
+    const std::int64_t cur = s->resume_base.load(std::memory_order_relaxed)
+                             + static_cast<std::int64_t>(dlnow < 0 ? 0 : dlnow);
+    const std::int64_t want = s->want.load(std::memory_order_relaxed);
+    s->now.store(want > 0 && cur > want ? want : cur, std::memory_order_relaxed);
+    if (want > 0 && cur >= want)
+    {
+        return 0; /* complete: never stall-abort a finished Range */
+    }
     if (dlnow > s->last_byte.load(std::memory_order_relaxed))
     {
         s->last_byte.store(dlnow, std::memory_order_relaxed);
@@ -348,12 +387,6 @@ chunk_xfer(void* clientp, curl_off_t /*dltotal*/, curl_off_t dlnow, curl_off_t /
         {
             return 1; /* abort: stalled > 8 s */
         }
-    }
-    if (dlnow >= 0)
-    {
-        s->now.store(s->resume_base.load(std::memory_order_relaxed)
-                         + static_cast<std::int64_t>(dlnow),
-                     std::memory_order_relaxed);
     }
     return 0;
 }
@@ -450,26 +483,43 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
     fclose(f);
     curl_easy_cleanup(c);
 
-    const std::int64_t got = have + static_cast<std::int64_t>(downloaded);
-    if (res != CURLE_OK || (code != 206 && code != 200) || got < want)
+    std::int64_t on_disk = 0;
     {
         std::error_code ec;
-        if (have <= 0)
+        if (fs::exists(part_path, ec) && !ec)
         {
-            fs::remove(part_path, ec);
+            const auto sz = fs::file_size(part_path, ec);
+            if (!ec)
+            {
+                on_disk = static_cast<std::int64_t>(sz);
+            }
         }
-        else
+    }
+    if (on_disk >= want)
+    {
+        if (slot != nullptr)
         {
-            fs::resize_file(part_path, static_cast<std::uintmax_t>(have), ec);
+            slot->now.store(want, std::memory_order_relaxed);
         }
+        return true;
+    }
+    /* Stall/timeout after a 206: keep grown bytes for the next proxy. */
+    if ((code == 206 || code == 200) && on_disk > have)
+    {
         return false;
     }
-
-    if (slot != nullptr)
+    (void)res;
+    (void)downloaded;
+    std::error_code ec;
+    if (have <= 0)
     {
-        slot->now.store(want, std::memory_order_relaxed);
+        fs::remove(part_path, ec);
     }
-    return true;
+    else
+    {
+        fs::resize_file(part_path, static_cast<std::uintmax_t>(have), ec);
+    }
+    return false;
 }
 
 struct RunOptions
@@ -826,16 +876,13 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                     std::snprintf(msg, sizeof(msg), "idle");
                 }
                 chunk_bars.go_line(i);
-                auto st = tui::progress_bar_init(msg, want > 0 ? want : 1, 36, chunk_style);
-                tui::progress_bar_update(st, now);
+                draw_byte_bar(msg, now, want, chunk_style);
             }
             char tmsg[80];
             std::snprintf(tmsg, sizeof(tmsg), "total  %.2f MB/s  %d/%zu", speed, finished.load(),
                           chunks.size());
             chunk_bars.go_line(n_bars);
-            auto tst = tui::progress_bar_init(tmsg, download_size > 0 ? download_size : 1, 36,
-                                              total_style);
-            tui::progress_bar_update(tst, live);
+            draw_byte_bar(tmsg, live, download_size, total_style);
             std::cout.flush();
         }
         else
