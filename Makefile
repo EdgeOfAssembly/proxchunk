@@ -9,13 +9,15 @@ all:
 	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
 	cmake --build $(BUILD_DIR) -j$(NPROC) -- -s
 
-$(BUILD_DIR)/proxchunk $(BUILD_DIR)/test_plan $(BUILD_DIR)/test_repl: all
+$(BUILD_DIR)/proxchunk $(BUILD_DIR)/proxchunkd $(BUILD_DIR)/test_plan $(BUILD_DIR)/test_repl: all
 
 test: all
 	$(BUILD_DIR)/test_plan
 	$(BUILD_DIR)/test_repl
 	@echo "==> CLI help/version/edges"
 	bash tests/test_cli.sh $(BUILD_DIR)/proxchunk
+	@echo "==> proxchunkd CLI + IPC + SIGINT"
+	bash tests/test_proxchunkd.sh $(BUILD_DIR)/proxchunkd $(BUILD_DIR)/proxchunk
 	@echo "==> REPL builtins"
 	bash tests/test_repl.sh $(BUILD_DIR)/proxchunk
 	@echo "==> local Range download"
@@ -33,7 +35,7 @@ verify: test
 	$(CBMC) --bounds-check --pointer-check --div-by-zero-check \
 	    --unwind 17 --unwinding-assertions \
 	    -I include tests/verify_plan.c
-	@echo "formal: CBMC plan_n ok (libcurl I/O not modeled)"
+	@echo "formal: CBMC plan_n ok (UNIX IPC / libcurl not modeled)"
 
 clean:
 	rm -rf $(BUILD_DIR) build-profile build-release build-release-static \
@@ -47,7 +49,7 @@ profile:
 release:
 	cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 	cmake --build build-release -j$(NPROC) -- -s
-	@echo "Release binary: build-release/proxchunk"
+	@echo "Release binaries: build-release/proxchunk build-release/proxchunkd"
 
 # Fully static: libcurl.a + local overlay nghttp2/brotli static-libs.
 release-static:
@@ -55,8 +57,10 @@ release-static:
 	cmake --build build-release-static -j$(NPROC) -- -s
 	strip --strip-all -R .note.gnu.build-id -o build-release-static/proxchunk.stripped \
 	    build-release-static/proxchunk
-	@echo "Static binary: build-release-static/proxchunk"
-	@echo "Stripped: build-release-static/proxchunk.stripped"
+	strip --strip-all -R .note.gnu.build-id -o build-release-static/proxchunkd.stripped \
+	    build-release-static/proxchunkd
+	@echo "Static binaries: build-release-static/proxchunk build-release-static/proxchunkd"
+	@echo "Stripped: build-release-static/proxchunk.stripped build-release-static/proxchunkd.stripped"
 
 dist:
 	bash scripts/build-glibc-gui.sh

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(proxchunk VERSION 1.0 LANGUAGES CXX)
+project(proxchunk VERSION 1.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,26 +30,32 @@ set(CMAKE_SHARED_LINKER_FLAGS_PROFILE "-pg" CACHE STRING "Shared linker flags fo
 find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
 
-add_executable(proxchunk src/proxchunk.cpp)
-target_include_directories(proxchunk PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    /usr/local/include
-)
-target_compile_definitions(proxchunk PRIVATE PROXCHUNK_VERSION="${PROJECT_VERSION}")
-
-if(STATIC_LINK)
-    target_compile_definitions(proxchunk PRIVATE CURL_STATICLIB)
-    target_link_options(proxchunk PRIVATE -static -static-libgcc -static-libstdc++)
-    target_link_libraries(proxchunk PRIVATE
-        -Wl,--start-group
-        curl cares idn2 unistring rtmp ssh2 gcrypt gpg-error ssl crypto zstd z
-        nghttp2 brotlidec brotlicommon
-        -Wl,--end-group
-        dl pthread
+function(proxchunk_link_curl tgt)
+    target_include_directories(${tgt} PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        /usr/local/include
     )
-else()
-    target_link_libraries(proxchunk PRIVATE CURL::libcurl Threads::Threads)
-endif()
+    target_compile_definitions(${tgt} PRIVATE PROXCHUNK_VERSION="${PROJECT_VERSION}")
+    if(STATIC_LINK)
+        target_compile_definitions(${tgt} PRIVATE CURL_STATICLIB)
+        target_link_options(${tgt} PRIVATE -static -static-libgcc -static-libstdc++)
+        target_link_libraries(${tgt} PRIVATE
+            -Wl,--start-group
+            curl cares idn2 unistring rtmp ssh2 gcrypt gpg-error ssl crypto zstd z
+            nghttp2 brotlidec brotlicommon
+            -Wl,--end-group
+            dl pthread
+        )
+    else()
+        target_link_libraries(${tgt} PRIVATE CURL::libcurl Threads::Threads)
+    endif()
+endfunction()
+
+add_executable(proxchunk src/proxchunk.cpp src/proxy_ipc.cpp)
+proxchunk_link_curl(proxchunk)
+
+add_executable(proxchunkd src/proxchunkd.cpp src/proxy_engine.cpp src/proxy_ipc.cpp)
+proxchunk_link_curl(proxchunkd)
 
 add_executable(test_plan tests/test_plan.cpp)
 target_include_directories(test_plan PRIVATE ${CMAKE_SOURCE_DIR}/include)
@@ -83,11 +89,11 @@ add_test(NAME plan COMMAND test_plan)
 add_test(NAME repl COMMAND test_repl)
 
 include(GNUInstallDirs)
-install(TARGETS proxchunk DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS proxchunk proxchunkd DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(TARGET proxchunk-gui)
     install(TARGETS proxchunk-gui DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
-install(FILES doc/proxchunk.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+install(FILES doc/proxchunk.1 doc/proxchunkd.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 install(FILES desktop/proxchunk.desktop
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
 install(FILES icons/proxchunk.svg

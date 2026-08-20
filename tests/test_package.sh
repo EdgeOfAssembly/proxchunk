@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Audit 1.0 binary and source release tarballs.
+# Audit 1.1 binary and source release tarballs.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-VER=${VER:-1.0}
+VER=${VER:-1.1}
 ARCH=${ARCH:-$(uname -m)}
 BIN_TGZ=$ROOT/dist/proxchunk-${VER}-${ARCH}.tar.gz
 SRC_TGZ=$ROOT/dist/proxchunk-${VER}-src.tar.gz
@@ -19,6 +19,7 @@ tar -tzf "$BIN_TGZ" > "$STAGE/bin.list"
 prefix=proxchunk-${VER}-${ARCH}
 
 grep -qx "${prefix}/proxchunk" "$STAGE/bin.list" || fail "binary missing proxchunk"
+grep -qx "${prefix}/proxchunkd" "$STAGE/bin.list" || fail "binary missing proxchunkd"
 grep -qx "${prefix}/proxchunk-gui" "$STAGE/bin.list" || fail "binary missing proxchunk-gui"
 if grep -E 'ld-musl|libc\.musl|libexec/proxchunk-gui' "$STAGE/bin.list" | grep -q .; then
     fail "binary tarball still has musl GUI bits"
@@ -32,6 +33,7 @@ grep -qx "${prefix}/README.md" "$STAGE/bin.list" || fail "binary missing README.
 grep -qx "${prefix}/LICENSE" "$STAGE/bin.list" || fail "binary missing LICENSE"
 grep -qx "${prefix}/proxchunk.desktop" "$STAGE/bin.list" || fail "binary missing desktop"
 grep -qx "${prefix}/doc/proxchunk.1" "$STAGE/bin.list" || fail "binary missing man page"
+grep -qx "${prefix}/doc/proxchunkd.1" "$STAGE/bin.list" || fail "binary missing proxchunkd man page"
 grep -qx "${prefix}/icons/proxchunk.svg" "$STAGE/bin.list" || fail "binary missing svg"
 grep -qx "${prefix}/icons/pixmaps/proxchunk.png" "$STAGE/bin.list" || fail "binary missing pixmap"
 
@@ -51,6 +53,7 @@ mkdir -p "$STAGE/bin"
 tar -xzf "$BIN_TGZ" -C "$STAGE/bin"
 B=$STAGE/bin/$prefix
 [[ -x $B/proxchunk ]] || fail "packed binary not executable"
+[[ -x $B/proxchunkd ]] || fail "packed proxchunkd not executable"
 [[ -x $B/proxchunk-gui ]] || fail "packed proxchunk-gui not executable"
 ginfo=$(file "$B/proxchunk-gui")
 echo "gui file: $ginfo"
@@ -80,6 +83,8 @@ echo "$ldd_out" | grep -qiE 'not a dynamic|statically linked' \
 
 ver=$("$B/proxchunk" -v)
 test "$ver" = "proxchunk ${VER}" || fail "packed -v: $ver"
+dver=$("$B/proxchunkd" -v)
+test "$dver" = "proxchunkd ${VER}" || fail "packed proxchunkd -v: $dver"
 
 readme=$B/README.md
 grep -qiE '^## Build$|g\+\+|libcurl|cmake|make test' "$readme" \
@@ -98,6 +103,7 @@ sprefix=proxchunk-${VER}
 grep -qx "${sprefix}/CMakeLists.txt" "$STAGE/src.list" || fail "src missing CMakeLists.txt"
 grep -qx "${sprefix}/Makefile" "$STAGE/src.list" || fail "src missing Makefile"
 grep -qx "${sprefix}/src/proxchunk.cpp" "$STAGE/src.list" || fail "src missing proxchunk.cpp"
+grep -qx "${sprefix}/src/proxchunkd.cpp" "$STAGE/src.list" || fail "src missing proxchunkd.cpp"
 grep -qx "${sprefix}/README.md" "$STAGE/src.list" || fail "src missing README.md"
 grep -qx "${sprefix}/README.user.md" "$STAGE/src.list" || fail "src missing README.user.md"
 grep -qx "${sprefix}/tests/test_cli.sh" "$STAGE/src.list" || fail "src missing tests"

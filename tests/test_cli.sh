@@ -15,7 +15,7 @@ echo "$out" | grep -q Usage || fail "no-args should print usage"
 ver=$("$BIN" -v)
 echo "$ver" | grep -q '^proxchunk ' || fail "-v"
 test "$ver" = "$("$BIN" --version)" || fail "-v/--version mismatch"
-test "$ver" = "proxchunk 1.0" || fail "version want 'proxchunk 1.0' got '$ver'"
+test "$ver" = "proxchunk 1.1" || fail "version want 'proxchunk 1.1' got '$ver'"
 
 help=$("$BIN" -h 2>&1)
 echo "$help" | grep -q 'logical CPUs' || fail "help should say concurrent default is logical CPUs"

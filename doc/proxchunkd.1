@@ -1,0 +1,162 @@
+.TH PROXCHUNKD 1 "2026-08-21" "proxchunk 1.1" "User Commands"
+.SH NAME
+proxchunkd \- proxy fetch and score daemon for proxchunk
+.SH SYNOPSIS
+.B proxchunkd
+[\fIOPTIONS\fR]
+.br
+.B proxchunkd
+.B \-\-foreground
+[\fIOPTIONS\fR]
+.br
+.B proxchunkd
+.B \-\-stop
+.br
+.B proxchunkd
+.B \-\-status
+.SH DESCRIPTION
+.B proxchunkd
+fetches public HTTP and SOCKS5 proxy lists, scores them, and leases
+live endpoints to
+.BR proxchunk (1)
+over a UNIX socket.
+.PP
+With no arguments the process daemonizes.
+The parent exits 0 when the socket is listening; the first score pass
+may still be running.
+.B ACQUIRE
+retries until a live proxy is free (or 30 s elapse on the client).
+.PP
+Already running (socket
+.B PING
+works): start is idempotent, prints
+.B already running
+on stderr, and exits 0.
+.SH OPTIONS
+.TP
+.B \-\-foreground
+Stay in the terminal.
+Ctrl+C, SIGTERM, and SIGQUIT perform a graceful stop.
+The libsf proxy progress bar is drawn on the initial refresh when
+stdout is a TTY; later refreshes are quiet.
+.TP
+.B \-\-stop
+Ask the daemon to shut down (STOP on the socket, then SIGTERM to the
+pidfile if needed).
+Idempotent: already down exits 0.
+.TP
+.B \-\-status
+Ping the socket and print
+.B live
+/
+.B busy
+/
+.B top_mbps .
+Exit 1 if not running.
+.TP
+.BI \-\-socket " path"
+UNIX socket.
+Default:
+.I $XDG_RUNTIME_DIR/proxchunk/proxchunkd.sock
+(fallback
+.IR /tmp/proxchunk-$UID/proxchunkd.sock ).
+.TP
+.BI \-\-pid\-file " path"
+PID file (default: sibling
+.IR proxchunkd.pid ).
+.TP
+.BR \-p ", " \-\-proxies " " \fIN\fR
+Maximum live proxies to keep (default: 40).
+.TP
+.BR \-r ", " \-\-refresh " " \fIsec\fR
+Re-test interval in seconds (default: 180).
+.B 0
+disables the updater thread.
+.TP
+.BI \-\-test\-url " url"
+Scoring URL
+(default:
+.IR https://speed.cloudflare.com/__down?bytes=65536 ).
+.TP
+.B \-\-no\-cache
+Do not load or save
+.IR ~/.cache/proxchunk/proxies.txt .
+.TP
+.B \-\-no\-tor
+Do not auto-add local Tor on port 9050/9150.
+.TP
+.B \-\-no\-fetch
+Do not fetch public proxy lists (tests / offline).
+.TP
+.BI \-\-socks " url"
+Extra HTTP or SOCKS proxy.
+Repeatable.
+.TP
+.BI \-\-proxy\-file " file"
+Load extra proxies, one
+.I ip:port
+or URL per line.
+.TP
+.B \-\-no\-user\-proxies
+Do not load
+.IR ~/.config/proxchunk/proxies.txt .
+.TP
+.BI \-\-log\-file " path"
+Log file when daemonized
+(default:
+.IR ~/.cache/proxchunk/proxchunkd.log ).
+In
+.B \-\-foreground
+logs go to stderr.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.TP
+.BR \-v ", " \-\-version
+Print
+.BR proxchunkd " " 1.1 .
+.SH IPC
+Line-oriented UTF-8 on a
+.B SOCK_STREAM
+UNIX socket, max 4096 bytes per line.
+The first command must be
+.BR "HELLO 1" .
+.PP
+.B ACQUIRE
+is non-blocking:
+.B OK
+.I url mbps
+or
+.BR "ERR empty" .
+The client retries.
+On disconnect, held URLs are released as failures so busy leases cannot leak.
+.SH FILES
+.TP
+.I $XDG_RUNTIME_DIR/proxchunk/proxchunkd.sock
+Control socket (mode 0600; directory 0700).
+.TP
+.I $XDG_RUNTIME_DIR/proxchunk/proxchunkd.pid
+PID file with an exclusive
+.B fcntl
+lock.
+.TP
+.I ~/.cache/proxchunk/proxies.txt
+Scored proxy cache.
+.TP
+.I ~/.config/proxchunk/proxies.txt
+Optional user proxy list.
+.SH EXIT STATUS
+.TP
+.B 0
+Success, already running, help/version, or idempotent
+.BR \-\-stop .
+.TP
+.B 1
+Usage error, failed start, or
+.B \-\-status
+when down.
+.SH SEE ALSO
+.BR proxchunk (1),
+.BR curl (1)
+.SH AUTHORS
+proxchunk contributors.

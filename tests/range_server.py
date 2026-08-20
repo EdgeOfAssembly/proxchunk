@@ -13,8 +13,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Range-capable blob HTTP server")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--mb", type=int, default=32, help="Payload size in MiB")
+    parser.add_argument("--bytes", type=int, default=0, help="Payload size in bytes (overrides --mb)")
+    parser.add_argument(
+        "--require-proxy-header",
+        action="store_true",
+        help="HTTP 500 on Range unless X-Proxchunk-Proxy is set (simulates IA blocks)",
+    )
+    parser.add_argument(
+        "--direct-probe-500",
+        action="store_true",
+        help="HTTP 500 on Range 0-0 unless X-Proxchunk-Proxy is set",
+    )
     args = parser.parse_args()
-    size = args.mb * 1024 * 1024
+    size = args.bytes if args.bytes > 0 else args.mb * 1024 * 1024
     blob = bytes([0x5A]) * size
 
     class Handler(BaseHTTPRequestHandler):
@@ -36,6 +47,15 @@ def main() -> int:
 
         def do_GET(self) -> None:
             rng = self.headers.get("Range")
+            via = self.headers.get("X-Proxchunk-Proxy") == "1"
+            if rng and args.require_proxy_header and not via:
+                self.send_error(500, "direct range blocked")
+                return
+            if rng and args.direct_probe_500 and not via:
+                spec = rng[len("bytes=") :].strip() if rng.startswith("bytes=") else ""
+                if spec == "0-0" or spec.startswith("0-0"):
+                    self.send_error(500, "direct range blocked")
+                    return
             if not rng or not rng.startswith("bytes="):
                 self._send_full_headers(200, size)
                 self.wfile.write(blob)

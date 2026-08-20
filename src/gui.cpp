@@ -15,7 +15,7 @@
 #include <vector>
 
 #ifndef PROXCHUNK_VERSION
-#define PROXCHUNK_VERSION "1.0"
+#define PROXCHUNK_VERSION "1.1"
 #endif
 
 namespace fs = std::filesystem;

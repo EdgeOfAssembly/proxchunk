@@ -2,7 +2,7 @@
 # Source tarball from git (export-ignore strips host-only files).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-VER=${VER:-1.0}
+VER=${VER:-1.1}
 cd "$ROOT"
 if ! git diff --quiet || ! git diff --cached --quiet; then
     echo "working tree dirty — commit before building the source tarball" >&2

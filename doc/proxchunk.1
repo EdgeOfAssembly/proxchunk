@@ -1,4 +1,4 @@
-.TH PROXCHUNK 1 "2026-08-20" "proxchunk 1.0" "User Commands"
+.TH PROXCHUNK 1 "2026-08-21" "proxchunk 1.1" "User Commands"
 .SH NAME
 proxchunk \- multi-proxy HTTP Range chunked downloader
 .SH SYNOPSIS
@@ -16,15 +16,13 @@ those pieces through different proxy IP addresses.
 The goal is to reduce the effect of per-IP or per-connection throttling.
 .PP
 By default it uses one piece and one connection per logical CPU.
-Proxy lists are fetched and scored
-.B once
-before the download starts.
+Unless
+.B \-\-direct
+is given, file-size probing and chunk downloads go through proxies
+leased from
+.BR proxchunkd (1)
+(auto-started from this binary's directory if needed).
 Failed pieces are requeued; proxies that fail repeatedly are dropped.
-.PP
-It can fetch public HTTP and SOCKS5 proxy lists, score them, optionally
-reuse a local cache, and include local Tor
-.RB ( socks5h://127.0.0.1:9050 )
-when that port is in use.
 The remote server must support HTTP Range requests (206 Partial Content).
 .SH OPTIONS
 .TP
@@ -57,7 +55,12 @@ Download only the first
 mebibytes (0 = full file).
 .TP
 .B \-\-direct
-Single-IP download (no proxies).
+Single-IP download (no daemon, no proxies).
+.TP
+.BI \-\-socket " path"
+UNIX socket for
+.BR proxchunkd (1)
+(default: runtime dir).
 .TP
 .B \-\-no\-progress
 Do not draw the TUI progress bars.
@@ -139,6 +142,7 @@ Use a private proxy list:
 .B proxchunk --proxy-file ./proxies.txt --no-cache URL
 .RE
 .SH SEE ALSO
+.BR proxchunkd (1),
 .BR curl (1),
 .BR wget (1),
 .BR wget2 (1)

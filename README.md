@@ -5,8 +5,8 @@ Multi-proxy HTTP Range downloader for Linux.
 It splits a file into Range chunks and fetches them through different
 proxy IPs so per-IP or per-connection throttling is less effective.
 
-- Scores HTTP and SOCKS5 proxies (public lists, optional user list, optional Tor)
-- Downloads chunks in parallel, then assembles the file in order
+- Scores HTTP and SOCKS5 proxies in **proxchunkd** (public lists, optional user list, optional Tor)
+- Downloads chunks in parallel through leased proxies, then assembles the file in order
 - TUI progress bars (one per live connection plus a total; default one
   Range piece per logical CPU)
 - Optional **proxchunk-gui** (GTK+3 + VTE): desktop window with a `> ` prompt,
@@ -48,10 +48,11 @@ proxchunk [options] <URL>
 | `-o`, `--output FILE` | Output path (default: URL basename) |
 | `-c`, `--concurrent N` | Equal Range pieces and parallel connections (default: logical CPU count) |
 | `-s`, `--chunk-mb MB` | Split by this size in MiB instead of N equal pieces |
-| `-p`, `--proxies N` | Live proxies to keep (default: 40) |
-| `-r`, `--refresh SEC` | Re-test proxies during download (default: off; initial fetch+test always finishes first) |
+| `-p`, `--proxies N` | Live proxies to keep (passed to proxchunkd on auto-start; default: 40) |
+| `-r`, `--refresh SEC` | Re-test interval for an auto-started daemon (default: off) |
 | `--limit-mb MB` | Download only the first MB (0 = full file) |
-| `--direct` | Single IP, no proxies |
+| `--direct` | Single IP, no daemon, no proxies |
+| `--socket PATH` | proxchunkd UNIX socket (default: `$XDG_RUNTIME_DIR/proxchunk/proxchunkd.sock`) |
 | `--no-progress` | No TUI bars |
 | `--no-cache` | Do not use `~/.cache/proxchunk/proxies.txt` |
 | `--show-proxies` | Show a 15-character IPv4 field on each chunk bar |
@@ -64,6 +65,23 @@ proxchunk [options] <URL>
 | `--repl` | Interactive `> ` prompt (used by proxchunk-gui) |
 
 Arguments and options may appear in any order.
+
+### proxchunkd
+
+Proxy fetch and scoring runs in a small daemon so several downloads can
+share one pool, and so the file-size probe can go through a scored proxy
+(needed for hosts that 500 a direct `Range: 0-0`).
+
+```bash
+proxchunkd                 # daemonize; parent exits when the socket is listening
+proxchunkd --foreground    # Ctrl+C stops
+proxchunkd --status
+proxchunkd --stop
+```
+
+`proxchunk` auto-starts `proxchunkd` from `dirname(/proc/self/exe)` if the
+socket is down. `--direct` never talks to the daemon. Default refresh in
+the daemon is 180 s (`-r 0` disables).
 
 ### User proxy list
 
@@ -100,6 +118,7 @@ proxchunk --show-proxies -c 8 -s 8 -o file.bin 'https://example.com/file.bin'
 |------|------|
 | `~/.config/proxchunk/proxies.txt` | Optional user proxy list |
 | `~/.cache/proxchunk/proxies.txt` | Scored cache from previous runs |
+| `$XDG_RUNTIME_DIR/proxchunk/proxchunkd.sock` | Daemon control socket |
 
 ## Release tarballs
 
@@ -109,9 +128,10 @@ proxchunk --show-proxies -c 8 -s 8 -o file.bin 'https://example.com/file.bin'
 - `dist/proxchunk-<version>-src.tar.gz` — this source tree (`make` / `make test`)
 
 ```bash
-tar -xzf proxchunk-1.0-x86_64.tar.gz
-cd proxchunk-1.0-x86_64
+tar -xzf proxchunk-1.1-x86_64.tar.gz
+cd proxchunk-1.1-x86_64
 ./proxchunk --help
+./proxchunkd --help
 sudo ./install.sh
 sudo ./uninstall.sh
 ```

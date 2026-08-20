@@ -25,6 +25,6 @@ test ! -d "$tmp/sub/dir" || fail "rmdir"
 
 # pass-through: -v
 out=$(printf -- '-v\nexit\n' | "$BIN" --repl)
-echo "$out" | grep -q 'proxchunk 1.0' || fail "-v via repl: $out"
+echo "$out" | grep -q 'proxchunk 1.1' || fail "-v via repl: $out"
 
 echo "test_repl.sh ok"

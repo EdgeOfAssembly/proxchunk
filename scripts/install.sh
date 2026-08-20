@@ -36,11 +36,15 @@ fi
 BIN=$DIR/proxchunk
 [[ -x $BIN ]] || { echo "missing $BIN" >&2; exit 1; }
 
-# Colocate CLI + GUI + bundled GTK .so so $ORIGIN/lib resolves.
+# Colocate CLI + daemon + GUI + bundled GTK .so so $ORIGIN/lib resolves.
 LIBPC=$PREFIX/lib/proxchunk
 install -d "$LIBPC" "$PREFIX/bin"
 install -m 0755 "$BIN" "$LIBPC/proxchunk"
 ln -sfn ../lib/proxchunk/proxchunk "$PREFIX/bin/proxchunk"
+if [[ -x $DIR/proxchunkd ]]; then
+    install -m 0755 "$DIR/proxchunkd" "$LIBPC/proxchunkd"
+    ln -sfn ../lib/proxchunk/proxchunkd "$PREFIX/bin/proxchunkd"
+fi
 
 if [[ -x $DIR/proxchunk-gui ]]; then
     install -m 0755 "$DIR/proxchunk-gui" "$LIBPC/proxchunk-gui"
@@ -58,6 +62,10 @@ fi
 if [[ -f $DIR/doc/proxchunk.1 ]]; then
     install -d "$PREFIX/share/man/man1"
     install -m 0644 "$DIR/doc/proxchunk.1" "$PREFIX/share/man/man1/proxchunk.1"
+fi
+if [[ -f $DIR/doc/proxchunkd.1 ]]; then
+    install -d "$PREFIX/share/man/man1"
+    install -m 0644 "$DIR/doc/proxchunkd.1" "$PREFIX/share/man/man1/proxchunkd.1"
 fi
 
 if [[ -f $DIR/proxchunk.desktop ]]; then
@@ -104,6 +112,7 @@ command -v xfce4-panel >/dev/null && xfce4-panel -r 2>/dev/null || true
 
 echo "installed PREFIX=$PREFIX"
 echo "  $PREFIX/bin/proxchunk"
+echo "  $PREFIX/bin/proxchunkd"
 echo "  $PREFIX/bin/proxchunk-gui"
 echo "  $PREFIX/lib/proxchunk/"
 echo "  $PREFIX/share/pixmaps/proxchunk.png"

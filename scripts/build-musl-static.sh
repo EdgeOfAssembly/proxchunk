@@ -8,6 +8,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ALPINE=${ALPINE:-/mnt/alpine}
 PASS=${PASS:-}
 OUT=${OUT:-"$ROOT/proxchunk-musl-static"}
+OUTD=${OUTD:-"$ROOT/proxchunkd-musl-static"}
 
 if [[ ! -x $ALPINE/sbin/apk ]]; then
     echo "Alpine chroot not found at $ALPINE" >&2
@@ -38,19 +39,31 @@ cd /src/proxchunk
 g++ -std=gnu++23 -O3 -DNDEBUG -ffunction-sections -fdata-sections \
   -fno-pie -no-pie -static -static-libgcc -static-libstdc++ \
   -Iinclude -I/usr/local/include \
-  -DPROXCHUNK_VERSION=\"1.0\" -DCURL_STATICLIB \
-  src/proxchunk.cpp \
+  -DPROXCHUNK_VERSION=\"1.1\" -DCURL_STATICLIB \
+  src/proxchunk.cpp src/proxy_ipc.cpp \
   -Wl,--gc-sections -Wl,-static -Wl,--build-id=none \
   $(pkg-config --static --libs libcurl) \
   -o /src/proxchunk/proxchunk-musl-static
+g++ -std=gnu++23 -O3 -DNDEBUG -ffunction-sections -fdata-sections \
+  -fno-pie -no-pie -static -static-libgcc -static-libstdc++ \
+  -Iinclude -I/usr/local/include \
+  -DPROXCHUNK_VERSION=\"1.1\" -DCURL_STATICLIB \
+  src/proxchunkd.cpp src/proxy_engine.cpp src/proxy_ipc.cpp \
+  -Wl,--gc-sections -Wl,-static -Wl,--build-id=none \
+  $(pkg-config --static --libs libcurl) \
+  -o /src/proxchunk/proxchunkd-musl-static
 strip --strip-all -R .note.gnu.build-id /src/proxchunk/proxchunk-musl-static
-file /src/proxchunk/proxchunk-musl-static
+strip --strip-all -R .note.gnu.build-id /src/proxchunk/proxchunkd-musl-static
+file /src/proxchunk/proxchunk-musl-static /src/proxchunk/proxchunkd-musl-static
 '
 
 sudo_run cp "$ALPINE/src/proxchunk/proxchunk-musl-static" "$OUT"
-sudo_run chown "$(id -u):$(id -g)" "$OUT"
-chmod +x "$OUT"
-file "$OUT"
+sudo_run cp "$ALPINE/src/proxchunk/proxchunkd-musl-static" "$OUTD"
+sudo_run chown "$(id -u):$(id -g)" "$OUT" "$OUTD"
+chmod +x "$OUT" "$OUTD"
+file "$OUT" "$OUTD"
 ldd "$OUT" 2>&1 | head -3 || true
 "$OUT" -v
+"$OUTD" -v
 echo "wrote $OUT"
+echo "wrote $OUTD"

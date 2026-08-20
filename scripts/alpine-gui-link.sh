@@ -11,7 +11,7 @@ apk add --no-cache gtk+3.0-dev vte3-dev g++ pkgconf file binutils \
 echo "gtk=$(pkg-config --modversion gtk+-3.0) vte=$(pkg-config --modversion vte-2.91)"
 
 CFLAGS="-std=gnu++23 -O3 -DNDEBUG -ffunction-sections -fdata-sections -fno-pie -Wno-deprecated-declarations"
-CPPFLAGS="-Iinclude -DPROXCHUNK_VERSION=\"1.0\" $(pkg-config --cflags vte-2.91 gtk+-3.0)"
+CPPFLAGS="-Iinclude -DPROXCHUNK_VERSION=\"1.1\" $(pkg-config --cflags vte-2.91 gtk+-3.0)"
 LDFLAGS="-no-pie -Wl,--as-needed -Wl,--gc-sections -Wl,--build-id=none -Wl,-O1 -Wl,--hash-style=gnu -static-libgcc -static-libstdc++"
 LIBS="$(pkg-config --libs vte-2.91 gtk+-3.0)"
 

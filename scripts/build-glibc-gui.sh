@@ -23,7 +23,7 @@ rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/lib"
 
 CFLAGS="-std=gnu++23 -O3 -DNDEBUG -ffunction-sections -fdata-sections -fno-pie -Wall -Wextra"
-CPPFLAGS="-I$ROOT/include -DPROXCHUNK_VERSION=\"1.0\" $(pkg-config --cflags vte-2.91 gtk+-3.0)"
+CPPFLAGS="-I$ROOT/include -DPROXCHUNK_VERSION=\"1.1\" $(pkg-config --cflags vte-2.91 gtk+-3.0)"
 # Driver always sees as-needed (linker-dynamic). Full -static is NOT used:
 # glibc NSS + GTK dlopen need a dynamic libc.
 LDFLAGS="-no-pie -static-libgcc -static-libstdc++ -Wl,--as-needed -Wl,--gc-sections -Wl,--build-id=none -Wl,-O1 -Wl,--hash-style=gnu"

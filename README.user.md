@@ -6,9 +6,13 @@ Extract this directory and run:
 
 ```bash
 ./proxchunk --help
+./proxchunkd --help
 ./proxchunk -o file.bin 'https://example.com/file.bin'
 ./proxchunk-gui          # desktop window (VTE prompt; glibc Linux)
 ```
+
+`proxchunk` auto-starts **proxchunkd** (proxy pool) unless you pass `--direct`.
+Use `proxchunkd --status` / `proxchunkd --stop` to inspect or halt the daemon.
 
 The menu launcher starts **proxchunk-gui**. At the `> ` prompt, type proxchunk
 options and a URL, or `cd` / `mkdir` / `rm` / `rmdir` / `pwd` / `exit`.
@@ -36,7 +40,8 @@ sudo ./uninstall.sh         # remove those files
 | `-p`, `--proxies N` | Live proxies to keep (default: 40) |
 | `-r`, `--refresh SEC` | Re-test proxies during download (default: off) |
 | `--limit-mb MB` | Download only the first MB |
-| `--direct` | Single IP, no proxies |
+| `--direct` | Single IP, no daemon, no proxies |
+| `--socket PATH` | proxchunkd UNIX socket |
 | `--show-proxies` | 15-character IPv4 field on each chunk bar |
 | `--socks URL` | Extra HTTP or SOCKS proxy (repeatable) |
 | `--proxy-file FILE` | Extra `ip:port` or `scheme://host:port` list |
