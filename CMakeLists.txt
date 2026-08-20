@@ -10,7 +10,7 @@ if(NOT CMAKE_CXX_COMPILER MATCHES "g\\+\\+")
 endif()
 
 option(STATIC_LINK
-    "Link libcurl from static archives (nghttp2/brotli stay shared if no .a)"
+    "Fully static link (libcurl.a plus nghttp2/brotli static-libs from local overlay)"
     OFF)
 
 add_compile_options(-Wall -Wextra -Wpedantic -Wshadow)
@@ -39,13 +39,12 @@ target_compile_definitions(proxchunk PRIVATE PROXCHUNK_VERSION="${PROJECT_VERSIO
 
 if(STATIC_LINK)
     target_compile_definitions(proxchunk PRIVATE CURL_STATICLIB)
-    target_link_options(proxchunk PRIVATE -static-libgcc -static-libstdc++)
-    # libcurl.a pulls HTTP/2 and Brotli; those packages ship only .so here.
+    target_link_options(proxchunk PRIVATE -static -static-libgcc -static-libstdc++)
     target_link_libraries(proxchunk PRIVATE
-        -Wl,-Bstatic
+        -Wl,--start-group
         curl cares idn2 unistring rtmp ssh2 gcrypt gpg-error ssl crypto zstd z
-        -Wl,-Bdynamic
         nghttp2 brotlidec brotlicommon
+        -Wl,--end-group
         dl pthread
     )
 else()

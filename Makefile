@@ -38,11 +38,11 @@ release:
 	cmake --build build-release -j$(NPROC) -- -s
 	@echo "Release binary: build-release/proxchunk"
 
-# libcurl from .a; nghttp2 and brotli remain shared (no .a on this host).
+# Fully static: libcurl.a + local overlay nghttp2/brotli static-libs.
 release-static:
 	cmake -S . -B build-release-static -DCMAKE_BUILD_TYPE=Release -DSTATIC_LINK=ON
 	cmake --build build-release-static -j$(NPROC) -- -s
-	strip --strip-unneeded -o build-release-static/proxchunk.stripped \
+	strip --strip-all -o build-release-static/proxchunk.stripped \
 	    build-release-static/proxchunk
-	@echo "Static-leaning binary: build-release-static/proxchunk"
+	@echo "Static binary: build-release-static/proxchunk"
 	@echo "Stripped: build-release-static/proxchunk.stripped"

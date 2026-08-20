@@ -26,8 +26,8 @@ Optimized release:
 make release
 ```
 
-Mostly-static release (`libcurl.a` plus static libgcc/libstdc++; nghttp2 and
-brotli stay shared if those packages have no `.a`):
+Fully static release (`-static`, `libcurl.a`, plus `libnghttp2.a` /
+`libbrotlidec.a` from the local overlay with `USE=static-libs`):
 
 ```bash
 make release-static
