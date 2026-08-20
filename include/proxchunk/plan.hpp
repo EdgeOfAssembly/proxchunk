@@ -6,6 +6,8 @@
 #ifndef PROXCHUNK_PLAN_HPP
 #define PROXCHUNK_PLAN_HPP
 
+#include "plan_n.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
@@ -122,6 +124,31 @@ plan_chunks(std::int64_t size, std::int64_t chunk_bytes)
         ch.start = off;
         ch.end   = std::min(off + chunk_bytes - 1, size - 1);
         ch.id    = id++;
+        out.push_back(ch);
+    }
+    return out;
+}
+
+/**
+ * @brief Split [0, size) into @p n_pieces equal Range pieces (last takes remainder).
+ *
+ * Used as the default plan: one piece per concurrent connection (logical CPUs).
+ */
+[[nodiscard]] inline std::vector<chunk>
+plan_chunks_n(std::int64_t size, int n_pieces)
+{
+    std::vector<chunk> out;
+    const int n = plan_n_piece_count(size, n_pieces);
+    if (n < 1)
+    {
+        return out;
+    }
+    out.reserve(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i)
+    {
+        chunk ch;
+        ch.id = i;
+        plan_n_bounds(size, n, i, &ch.start, &ch.end);
         out.push_back(ch);
     }
     return out;

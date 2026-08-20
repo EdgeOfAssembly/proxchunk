@@ -6,6 +6,7 @@
 #include "proxchunk/plan.hpp"
 
 #include <cassert>
+#include <cstddef>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -46,6 +47,23 @@ main()
 
     auto tiny = plan_chunks(1, 1);
     assert(tiny.size() == 1 && tiny[0].start == 0 && tiny[0].end == 0);
+
+    using proxchunk::plan_chunks_n;
+    auto n8 = plan_chunks_n(100, 8);
+    assert(n8.size() == 8);
+    assert(n8[0].start == 0 && n8[0].end == 11 && n8[0].id == 0);
+    assert(n8[7].start == 84 && n8[7].end == 99 && n8[7].id == 7);
+    for (std::size_t i = 1; i < n8.size(); ++i)
+    {
+        assert(n8[i].start == n8[i - 1].end + 1);
+    }
+    auto n_cap = plan_chunks_n(3, 8);
+    assert(n_cap.size() == 3);
+    assert(n_cap[0].start == 0 && n_cap[2].end == 2);
+    auto n_one = plan_chunks_n(10, 1);
+    assert(n_one.size() == 1 && n_one[0].start == 0 && n_one[0].end == 9);
+    assert(plan_chunks_n(0, 8).empty());
+    assert(plan_chunks_n(10, 0).empty());
 
     const char* tmp = "/tmp/proxchunk-test-proxies.txt";
     {

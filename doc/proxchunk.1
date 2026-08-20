@@ -11,9 +11,15 @@ proxchunk \- multi-proxy HTTP Range chunked downloader
 [\fIOPTIONS\fR]
 .SH DESCRIPTION
 .B proxchunk
-downloads a file by splitting it into HTTP Range chunks and fetching
-those chunks through different proxy IP addresses.
+downloads a file by splitting it into HTTP Range pieces and fetching
+those pieces through different proxy IP addresses.
 The goal is to reduce the effect of per-IP or per-connection throttling.
+.PP
+By default it uses one piece and one connection per logical CPU.
+Proxy lists are fetched and scored
+.B once
+before the download starts.
+Failed pieces are requeued; proxies that fail repeatedly are dropped.
 .PP
 It can fetch public HTTP and SOCKS5 proxy lists, score them, optionally
 reuse a local cache, and include local Tor
@@ -28,17 +34,22 @@ Default: last path segment of
 .IR URL .
 .TP
 .BR \-c ", " \-\-concurrent " " \fIN\fR
-Maximum concurrent chunk downloads.
+Number of equal Range pieces and parallel connections.
 Default: number of logical CPUs on this machine.
 .TP
 .BR \-s ", " \-\-chunk\-mb " " \fIMB\fR
-Chunk size in mebibytes (default: 8).
+Split the file into pieces of this size in mebibytes instead of
+N equal pieces.
 .TP
 .BR \-p ", " \-\-proxies " " \fIN\fR
 Maximum live proxies to keep (default: 40).
 .TP
 .BR \-r ", " \-\-refresh " " \fIsec\fR
-Background proxy refresh interval in seconds (default: 180).
+Re-test proxies every
+.I sec
+seconds during the download (default: off).
+The initial fetch and score always finishes before downloading starts.
+If this option is used, later re-tests do not draw a progress bar.
 .TP
 .BI \-\-limit\-mb " MB"
 Download only the first

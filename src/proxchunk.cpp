@@ -231,23 +231,28 @@ public:
         {
             return;
         }
+        /* Fetch + score once, with TUI, before any Range download starts. */
         if (!try_reuse_cache())
         {
-            refresh();
+            refresh(true);
         }
-        updater_ = std::jthread([this](std::stop_token st) {
-            while (!st.stop_requested())
-            {
-                for (int i = 0; i < refresh_sec_ && !st.stop_requested(); ++i)
+        /* Optional quiet re-test during download; default refresh_sec_ is 0. */
+        if (refresh_sec_ > 0)
+        {
+            updater_ = std::jthread([this](std::stop_token st) {
+                while (!st.stop_requested())
                 {
-                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                    for (int i = 0; i < refresh_sec_ && !st.stop_requested(); ++i)
+                    {
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                    }
+                    if (!st.stop_requested())
+                    {
+                        refresh(false);
+                    }
                 }
-                if (!st.stop_requested())
-                {
-                    refresh();
-                }
-            }
-        });
+            });
+        }
     }
 
     void stop()
@@ -340,7 +345,7 @@ private:
         std::chrono::steady_clock::time_point t0{};
     };
 
-    void refresh()
+    void refresh(bool show_progress)
     {
         std::vector<std::string> rest = fetch_all_lists();
         std::sort(rest.begin(), rest.end());
@@ -358,7 +363,8 @@ private:
             return;
         }
 
-        std::vector<Proxy> tested = test_proxies_multi(candidates, locals.size());
+        std::vector<Proxy> tested =
+            test_proxies_multi(candidates, locals.size(), show_progress);
 
         std::sort(tested.begin(), tested.end(), std::greater<>{});
         if (tested.size() > max_keep_)
@@ -607,7 +613,7 @@ private:
 
     [[nodiscard]] std::vector<Proxy>
     test_proxies_multi(const std::vector<std::string>& candidates,
-                       std::size_t must_test_first = 0)
+                       std::size_t must_test_first = 0, bool show_progress = true)
     {
         constexpr int kMaxInflight = 96;
         const std::size_t total = candidates.size();
@@ -653,7 +659,7 @@ private:
         {
         }
 
-        const bool use_bar = isatty(STDOUT_FILENO);
+        const bool use_bar = show_progress && isatty(STDOUT_FILENO);
         tui::progress_bar_style style = tui::progress_bar_styles::blocks_smooth();
         style.use_gradient = true;
         style.gradient_start = tui::make_rgb(220, 160, 40);
@@ -980,6 +986,7 @@ struct SlotProgress
     std::atomic<int>           chunk_id{-1};
     std::atomic<std::int64_t>  now{0};
     std::atomic<std::int64_t>  want{0};
+    std::atomic<bool>          active{false};
     mutable std::mutex         ip_mu;
     char                       ip[kIpv4FieldWidth + 1]{};
     std::atomic<std::int64_t>  last_byte{0};
@@ -1115,7 +1122,7 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
 struct RunOptions
 {
     int  max_concurrent = 0; ///< filled from hardware_concurrency unless -c
-    int  chunk_mb       = 8;
+    int  chunk_mb       = 0; ///< 0 = N equal pieces; >0 = size-based via -s
     std::int64_t limit_bytes = 0; ///< 0 = full file
     bool direct         = false;
     bool progress       = true;
@@ -1149,10 +1156,20 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
         std::cerr << "[proxchunk] Limiting download to first " << download_size << " bytes\n";
     }
 
-    const std::int64_t chunk_size = static_cast<std::int64_t>(opt.chunk_mb) * 1024 * 1024;
-    auto chunks = proxchunk::plan_chunks(download_size, chunk_size);
-    std::cerr << "[proxchunk] Split into " << chunks.size() << " chunks of ~" << opt.chunk_mb
-              << " MB\n";
+    std::vector<proxchunk::chunk> chunks;
+    if (opt.chunk_mb > 0)
+    {
+        const std::int64_t chunk_size =
+            static_cast<std::int64_t>(opt.chunk_mb) * 1024 * 1024;
+        chunks = proxchunk::plan_chunks(download_size, chunk_size);
+        std::cerr << "[proxchunk] Split into " << chunks.size() << " chunks of ~"
+                  << opt.chunk_mb << " MB\n";
+    }
+    else
+    {
+        chunks = proxchunk::plan_chunks_n(download_size, opt.max_concurrent);
+        std::cerr << "[proxchunk] Split into " << chunks.size() << " equal pieces\n";
+    }
 
     fs::path tmpdir = output.parent_path();
     if (tmpdir.empty())
@@ -1180,15 +1197,11 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
 
     int n_workers = std::min(opt.max_concurrent, static_cast<int>(chunks.size()));
     n_workers = std::max(1, n_workers);
-    std::vector<SlotProgress> slots(chunks.size());
-    for (std::size_t i = 0; i < chunks.size(); ++i)
-    {
-        slots[i].chunk_id.store(chunks[i].id);
-        slots[i].want.store(chunks[i].end - chunks[i].start + 1);
-        slots[i].now.store(0);
-    }
+    /* One TUI bar per live connection, not one per planned slice. */
+    std::vector<SlotProgress> slots(static_cast<std::size_t>(n_workers));
 
-    auto worker_fn = [&]() {
+    auto worker_fn = [&](int worker_id) {
+        auto& sp = slots[static_cast<std::size_t>(worker_id)];
         while (true)
         {
             Job job;
@@ -1211,7 +1224,10 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
 
             const proxchunk::chunk ch = job.ch;
             const std::int64_t want = ch.end - ch.start + 1;
-            auto& sp = slots[static_cast<std::size_t>(ch.id)];
+            sp.chunk_id.store(ch.id, std::memory_order_relaxed);
+            sp.want.store(want, std::memory_order_relaxed);
+            sp.now.store(0, std::memory_order_relaxed);
+            sp.active.store(true, std::memory_order_relaxed);
 
             std::string proxy_addr;
             std::optional<Proxy> px;
@@ -1258,13 +1274,15 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
 
             if (ok)
             {
-                sp.now.store(want);
+                sp.now.store(want, std::memory_order_relaxed);
+                sp.active.store(false, std::memory_order_relaxed);
                 bytes_done.fetch_add(want);
                 finished.fetch_add(1);
             }
             else
             {
-                sp.now.store(0);
+                sp.now.store(0, std::memory_order_relaxed);
+                sp.active.store(false, std::memory_order_relaxed);
                 job.attempts++;
                 if (job.attempts < 8)
                 {
@@ -1286,7 +1304,7 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
     std::vector<std::jthread> workers;
     for (int i = 0; i < n_workers; ++i)
     {
-        workers.emplace_back(worker_fn);
+        workers.emplace_back([&, i]() { worker_fn(i); });
     }
 
     const bool use_bar = opt.progress && isatty(STDOUT_FILENO);
@@ -1303,7 +1321,7 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
 
     const auto t_start = std::chrono::steady_clock::now();
     const int need = static_cast<int>(chunks.size());
-    const int n_bars = static_cast<int>(chunks.size());
+    const int n_bars = n_workers;
     BarLayout chunk_bars;
     if (use_bar)
     {
@@ -1311,10 +1329,13 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
     }
 
     auto live_bytes = [&]() -> std::int64_t {
-        std::int64_t n = 0;
+        std::int64_t n = bytes_done.load(std::memory_order_relaxed);
         for (const auto& s : slots)
         {
-            n += s.now.load();
+            if (s.active.load(std::memory_order_relaxed))
+            {
+                n += s.now.load(std::memory_order_relaxed);
+            }
         }
         return n;
     };
@@ -1329,18 +1350,31 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
         {
             for (int i = 0; i < n_bars; ++i)
             {
-                const std::int64_t now = slots[static_cast<std::size_t>(i)].now.load();
-                const std::int64_t want = slots[static_cast<std::size_t>(i)].want.load();
+                const auto& sl = slots[static_cast<std::size_t>(i)];
+                const std::int64_t now = sl.now.load(std::memory_order_relaxed);
+                const std::int64_t want = sl.want.load(std::memory_order_relaxed);
+                const int cid = sl.chunk_id.load(std::memory_order_relaxed);
                 char msg[64];
                 if (opt.show_proxies)
                 {
                     char ip[kIpv4FieldWidth + 1];
-                    slots[static_cast<std::size_t>(i)].copy_ip(ip);
-                    std::snprintf(msg, sizeof(msg), "%s chunk %d", ip, i);
+                    sl.copy_ip(ip);
+                    if (cid >= 0)
+                    {
+                        std::snprintf(msg, sizeof(msg), "%s chunk %d", ip, cid);
+                    }
+                    else
+                    {
+                        std::snprintf(msg, sizeof(msg), "%s idle", ip);
+                    }
+                }
+                else if (cid >= 0)
+                {
+                    std::snprintf(msg, sizeof(msg), "chunk %d", cid);
                 }
                 else
                 {
-                    std::snprintf(msg, sizeof(msg), "chunk %d", i);
+                    std::snprintf(msg, sizeof(msg), "idle");
                 }
                 chunk_bars.go_line(i);
                 tui::progress_bar(msg, now, want > 0 ? want : 1, 36, chunk_style);
@@ -1440,10 +1474,11 @@ usage(const char* prog)
         << "       " << prog << " <URL> [options]\n"
         << "\n"
         << "  -o, --output <file>   Output path (default: basename of URL)\n"
-        << "  -c, --concurrent <N>  Max concurrent chunk downloads (default: logical CPUs)\n"
-        << "  -s, --chunk-mb <MB>   Chunk size in megabytes (default: 8)\n"
+        << "  -c, --concurrent <N>  Equal Range pieces and parallel connections\n"
+        << "                        (default: logical CPUs)\n"
+        << "  -s, --chunk-mb <MB>   Split by this size in MiB instead of N equal pieces\n"
         << "  -p, --proxies <N>     Max proxies to keep in pool (default: 40)\n"
-        << "  -r, --refresh <sec>   Proxy refresh interval (default: 180)\n"
+        << "  -r, --refresh <sec>   Re-test proxies during download (default: off)\n"
         << "      --limit-mb <MB>   Download only the first MB (0 = full file)\n"
         << "      --direct          Single-IP download (no proxies)\n"
         << "      --no-progress     Do not draw the TUI progress bar\n"
@@ -1457,8 +1492,9 @@ usage(const char* prog)
         << "  -v, --version         Print version\n"
         << "      --repl            Interactive prompt (used by proxchunk-gui)\n"
         << "\n"
-        << "Fetches and scores free HTTP proxies, then downloads Range chunks\n"
-        << "through different IPs to beat per-IP throttle.\n";
+        << "Fetches and scores free HTTP proxies once, then downloads N Range\n"
+        << "pieces through different IPs to beat per-IP throttle. Failed pieces\n"
+        << "and dead proxies are retried automatically.\n";
 }
 
 static std::string
@@ -1564,9 +1600,10 @@ main(int argc, char* argv[])
     std::string out_path;
     int concurrent = 0;
     bool concurrent_set = false;
-    int chunk_mb   = 8;
+    int chunk_mb   = 0;
+    bool chunk_mb_set = false;
     int max_proxies = 40;
-    int refresh_sec = 180;
+    int refresh_sec = 0;
     RunOptions opt;
     bool use_cache = true;
     bool use_tor = true;
@@ -1607,6 +1644,7 @@ main(int argc, char* argv[])
         else if (a == "-s" || a == "--chunk-mb")
         {
             chunk_mb = std::atoi(need("-s"));
+            chunk_mb_set = true;
         }
         else if (a == "-p" || a == "--proxies")
         {
@@ -1675,16 +1713,26 @@ main(int argc, char* argv[])
     }
 
     opt.max_concurrent = concurrent;
-    opt.chunk_mb = chunk_mb;
+    opt.chunk_mb = chunk_mb_set ? chunk_mb : 0;
 
     if (url.empty())
     {
         usage(argv[0]);
         return 0;
     }
-    if (concurrent < 1 || chunk_mb < 1 || max_proxies < 1)
+    if (concurrent < 1 || max_proxies < 1)
     {
-        std::cerr << "concurrent, chunk-mb, and proxies must be >= 1\n";
+        std::cerr << "concurrent and proxies must be >= 1\n";
+        return 1;
+    }
+    if (chunk_mb_set && chunk_mb < 1)
+    {
+        std::cerr << "chunk-mb must be >= 1\n";
+        return 1;
+    }
+    if (refresh_sec < 0)
+    {
+        std::cerr << "refresh must be >= 0 (0 = no background refresh)\n";
         return 1;
     }
 
@@ -1694,9 +1742,16 @@ main(int argc, char* argv[])
     }
 
     std::cerr << "[proxchunk] Starting. Target: " << url << "\n";
-    std::cerr << "[proxchunk] Output: " << out_path << "  concurrent=" << concurrent
-              << "  chunk=" << chunk_mb << "MB"
-              << (opt.direct ? "  direct" : "") << "\n";
+    std::cerr << "[proxchunk] Output: " << out_path << "  concurrent=" << concurrent;
+    if (chunk_mb_set)
+    {
+        std::cerr << "  chunk=" << chunk_mb << "MB";
+    }
+    else
+    {
+        std::cerr << "  pieces=" << concurrent;
+    }
+    std::cerr << (opt.direct ? "  direct" : "") << "\n";
 
     if (opt.direct)
     {
@@ -1738,15 +1793,7 @@ main(int argc, char* argv[])
     ProxyPool pool(static_cast<std::size_t>(max_proxies), refresh_sec, test_url,
                    default_proxy_cache_path(), use_cache, use_tor, extra_proxies);
     pool.start();
-
-    for (int i = 0; i < 45 && pool.size() < 3; ++i)
-    {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        if (i % 5 == 4)
-        {
-            std::cerr << "[proxchunk] Waiting for proxy pool... " << pool.size() << " live\n";
-        }
-    }
+    /* start() already finished the one-shot fetch+test. */
 
     if (pool.size() == 0)
     {

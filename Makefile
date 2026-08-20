@@ -20,12 +20,20 @@ test: all
 	bash tests/test_repl.sh $(BUILD_DIR)/proxchunk
 	@echo "==> local Range download"
 	bash tests/test_download.sh $(BUILD_DIR)/proxchunk
+	@echo "==> N-way plan concrete"
+	gcc -std=gnu23 -Wall -Wextra -Wpedantic -I include \
+	    -o $(BUILD_DIR)/verify_plan_run tests/verify_plan.c
+	$(BUILD_DIR)/verify_plan_run
 	@echo "All tests passed."
 
 tests: test
 
+CBMC ?= $(HOME)/.local/bin/cbmc
 verify: test
-	@echo "formal: not run (no CBMC model for libcurl I/O)"
+	$(CBMC) --bounds-check --pointer-check --div-by-zero-check \
+	    --unwind 17 --unwinding-assertions \
+	    -I include tests/verify_plan.c
+	@echo "formal: CBMC plan_n ok (libcurl I/O not modeled)"
 
 clean:
 	rm -rf $(BUILD_DIR) build-profile build-release build-release-static \

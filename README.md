@@ -7,7 +7,8 @@ proxy IPs so per-IP or per-connection throttling is less effective.
 
 - Scores HTTP and SOCKS5 proxies (public lists, optional user list, optional Tor)
 - Downloads chunks in parallel, then assembles the file in order
-- TUI progress bars (one per chunk plus a total)
+- TUI progress bars (one per live connection plus a total; default one
+  Range piece per logical CPU)
 - Optional **proxchunk-gui** (GTK+3 + VTE): desktop window with a `> ` prompt,
   File/Quit (Ctrl+Q), Help/About. Release GUI is **glibc** (`scripts/build-glibc-gui.sh`):
   `-static-libgcc -static-libstdc++`, then `-Wl,-Bstatic --start-group` for every
@@ -45,10 +46,10 @@ proxchunk [options] <URL>
 | Option | Meaning |
 |--------|---------|
 | `-o`, `--output FILE` | Output path (default: URL basename) |
-| `-c`, `--concurrent N` | Max parallel chunks (default: logical CPU count) |
-| `-s`, `--chunk-mb MB` | Chunk size in MiB (default: 8) |
+| `-c`, `--concurrent N` | Equal Range pieces and parallel connections (default: logical CPU count) |
+| `-s`, `--chunk-mb MB` | Split by this size in MiB instead of N equal pieces |
 | `-p`, `--proxies N` | Live proxies to keep (default: 40) |
-| `-r`, `--refresh SEC` | Pool refresh interval (default: 180) |
+| `-r`, `--refresh SEC` | Re-test proxies during download (default: off; initial fetch+test always finishes first) |
 | `--limit-mb MB` | Download only the first MB (0 = full file) |
 | `--direct` | Single IP, no proxies |
 | `--no-progress` | No TUI bars |

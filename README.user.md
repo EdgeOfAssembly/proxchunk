@@ -31,9 +31,10 @@ sudo ./uninstall.sh         # remove those files
 | Option | Meaning |
 |--------|---------|
 | `-o`, `--output FILE` | Output path (default: URL basename) |
-| `-c`, `--concurrent N` | Max parallel chunks (default: logical CPU count) |
-| `-s`, `--chunk-mb MB` | Chunk size in MiB (default: 8) |
+| `-c`, `--concurrent N` | Equal Range pieces and parallel connections (default: logical CPU count) |
+| `-s`, `--chunk-mb MB` | Split by this size in MiB instead of N equal pieces |
 | `-p`, `--proxies N` | Live proxies to keep (default: 40) |
+| `-r`, `--refresh SEC` | Re-test proxies during download (default: off) |
 | `--limit-mb MB` | Download only the first MB |
 | `--direct` | Single IP, no proxies |
 | `--show-proxies` | 15-character IPv4 field on each chunk bar |
