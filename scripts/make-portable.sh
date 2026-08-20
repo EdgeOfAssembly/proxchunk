@@ -24,6 +24,12 @@ install -m 0644 "$ROOT/LICENSE" "$STAGE/LICENSE"
 install -m 0644 "$ROOT/doc/proxchunk.1" "$STAGE/doc/proxchunk.1"
 install -m 0644 "$ROOT/icons/proxchunk.svg" "$STAGE/icons/proxchunk.svg"
 install -m 0644 "$ROOT/icons/proxchunk.png" "$STAGE/icons/proxchunk.png"
+if [[ -d $ROOT/icons/hicolor ]]; then
+    cp -a "$ROOT/icons/hicolor" "$STAGE/icons/"
+fi
+if [[ -d $ROOT/icons/pixmaps ]]; then
+    cp -a "$ROOT/icons/pixmaps" "$STAGE/icons/"
+fi
 
 cat > "$STAGE/README-PORTABLE.txt" <<EOF
 proxchunk $VER — portable tree

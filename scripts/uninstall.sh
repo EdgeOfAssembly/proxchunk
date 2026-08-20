@@ -43,16 +43,22 @@ rm_one() {
 rm_one "$PREFIX/bin/proxchunk"
 rm_one "$PREFIX/share/man/man1/proxchunk.1"
 rm_one "$PREFIX/share/applications/proxchunk.desktop"
+rm_one "$PREFIX/share/pixmaps/proxchunk.png"
 rm_one "$PREFIX/share/icons/hicolor/scalable/apps/proxchunk.svg"
 rm_one "$PREFIX/share/icons/hicolor/1024x1024/apps/proxchunk.png"
+for sz in 16 22 24 32 48 64 128 256 512; do
+    rm_one "$PREFIX/share/icons/hicolor/${sz}x${sz}/apps/proxchunk.png"
+done
+rm_one "$PREFIX/share/icons/hicolor/icon-theme.cache"
 
 command -v update-desktop-database >/dev/null \
     && update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
-command -v gtk-update-icon-cache >/dev/null \
-    && gtk-update-icon-cache -f "$PREFIX/share/icons/hicolor" 2>/dev/null || true
+if command -v gtk-update-icon-cache >/dev/null; then
+    gtk-update-icon-cache -f -t "$PREFIX/share/icons/hicolor" 2>/dev/null || true
+fi
+command -v lxpanelctl >/dev/null && lxpanelctl restart 2>/dev/null || true
 
 if [[ $PURGE -eq 1 ]]; then
-    # Only the invoking user's config/cache (not root's, if sudo).
     if [[ -n ${SUDO_USER:-} ]]; then
         home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
     else
