@@ -99,25 +99,28 @@ proxchunk --show-proxies -c 8 -s 8 -o file.bin 'https://example.com/file.bin'
 | `~/.config/proxchunk/proxies.txt` | Optional user proxy list |
 | `~/.cache/proxchunk/proxies.txt` | Scored cache from previous runs |
 
-## Portable zip
+## Portable tarball
 
 `make dist` (after `scripts/build-musl-static.sh`) writes
-`dist/proxchunk-<version>.zip`. Extract anywhere:
+`dist/proxchunk-<version>.tar.gz`. Extract anywhere:
 
 ```text
 proxchunk-1.7/
-  proxchunk              musl-static binary
-  install-desktop.sh     menu entry + icon for this folder
-  proxchunk.desktop      for system installs (Icon=proxchunk)
-  icons/                 SVG + 1024×1024 PNG
+  proxchunk              musl-static binary (run in place)
+  install.sh             sudo → /usr/local/bin, man, desktop, icons
+  install-desktop.sh     user menu only (no sudo)
+  proxchunk.desktop
+  icons/
   doc/proxchunk.1
   README.md
   LICENSE
 ```
 
 ```bash
-./proxchunk --help
-./install-desktop.sh
+tar -xzf proxchunk-1.7.tar.gz
+cd proxchunk-1.7
+./proxchunk --help          # works immediately
+sudo ./install.sh           # /usr/local/bin, man, desktop, icons
 ```
 
 ## License

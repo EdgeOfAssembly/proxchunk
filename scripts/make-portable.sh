@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Pack musl-static proxchunk + desktop/icons/docs into proxchunk-<ver>.zip
+# Pack musl-static proxchunk into proxchunk-<ver>.tar.gz (unix permissions).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 VER=${VER:-1.7}
 BIN=${BIN:-$ROOT/proxchunk-musl-static}
 STAGE=$ROOT/dist/proxchunk-$VER
-ZIP=$ROOT/dist/proxchunk-$VER.zip
+TGZ=$ROOT/dist/proxchunk-$VER.tar.gz
 
 if [[ ! -x $BIN ]]; then
     echo "missing $BIN — run scripts/build-musl-static.sh first" >&2
@@ -16,6 +16,7 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/icons" "$STAGE/doc"
 
 install -m 0755 "$BIN" "$STAGE/proxchunk"
+install -m 0755 "$ROOT/scripts/install.sh" "$STAGE/install.sh"
 install -m 0755 "$ROOT/scripts/install-desktop.sh" "$STAGE/install-desktop.sh"
 install -m 0644 "$ROOT/desktop/proxchunk.desktop" "$STAGE/proxchunk.desktop"
 install -m 0644 "$ROOT/README.md" "$STAGE/README.md"
@@ -24,20 +25,21 @@ install -m 0644 "$ROOT/doc/proxchunk.1" "$STAGE/doc/proxchunk.1"
 install -m 0644 "$ROOT/icons/proxchunk.svg" "$STAGE/icons/proxchunk.svg"
 install -m 0644 "$ROOT/icons/proxchunk.png" "$STAGE/icons/proxchunk.png"
 
-# Portable desktop: Exec/Icon filled in by install-desktop.sh.
-# Keep a copy that still works if proxchunk is on PATH after extract.
 cat > "$STAGE/README-PORTABLE.txt" <<EOF
 proxchunk $VER — portable tree
 
-  ./proxchunk --help
-  ./install-desktop.sh     # menu entry with this folder's binary and icon
+  tar -xzf proxchunk-$VER.tar.gz
+  cd proxchunk-$VER
+  ./proxchunk --help              # use immediately, no install
+  sudo ./install.sh               # /usr/local/bin, man, desktop, icons
+  ./install-desktop.sh            # user menu only (no sudo)
 
-Extract path does not matter. Do not move the binary away from icons/
-if you want the menu icon to keep working after install-desktop.sh.
+After sudo ./install.sh, "proxchunk" and "man proxchunk" work from any directory.
 EOF
+chmod 0644 "$STAGE/README-PORTABLE.txt"
 
-rm -f "$ZIP"
-( cd "$ROOT/dist" && zip -r -9 "proxchunk-$VER.zip" "proxchunk-$VER" )
-echo "wrote $ZIP"
-unzip -l "$ZIP"
-ls -l "$ZIP"
+rm -f "$TGZ"
+tar -C "$ROOT/dist" -czf "$TGZ" "proxchunk-$VER"
+echo "wrote $TGZ"
+tar -tzf "$TGZ"
+ls -l "$TGZ"

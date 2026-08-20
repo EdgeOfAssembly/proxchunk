@@ -48,4 +48,4 @@ release-static:
 	@echo "Stripped: build-release-static/proxchunk.stripped"
 
 dist:
-	bash scripts/make-portable-zip.sh
+	bash scripts/make-portable.sh
