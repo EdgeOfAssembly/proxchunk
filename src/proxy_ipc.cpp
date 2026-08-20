@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <mutex>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
@@ -59,6 +60,13 @@ extract_line(std::string& leftover, std::string& line)
         line.pop_back();
     }
     return true;
+}
+
+void
+enable_keepalive(int fd)
+{
+    int yes = 1;
+    (void)::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
 }
 
 } // namespace
@@ -290,8 +298,49 @@ ensure_runtime_dir(const std::filesystem::path& dir)
     return true;
 }
 
+void
+ProxyClient::stop_keepalive()
+{
+    if (keepalive_.joinable())
+    {
+        keepalive_.request_stop();
+        keepalive_.join();
+    }
+}
+
+void
+ProxyClient::start_keepalive()
+{
+    stop_keepalive();
+    keepalive_ = std::jthread([this](std::stop_token st) {
+        while (!st.stop_requested())
+        {
+            const int slice = 100;
+            int slept = 0;
+            while (slept < k_keepalive_ms && !st.stop_requested())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(slice));
+                slept += slice;
+            }
+            if (st.stop_requested())
+            {
+                break;
+            }
+            std::unique_lock lk(mu_, std::try_to_lock);
+            if (!lk || !fd_)
+            {
+                continue;
+            }
+            (void)ipc_write_line(fd_.get(), "PING", 2000);
+            std::string reply;
+            (void)ipc_read_line(fd_.get(), leftover_, reply, 2000);
+        }
+    });
+}
+
 ProxyClient::~ProxyClient()
 {
+    stop_keepalive();
     std::lock_guard g(mu_);
     if (fd_)
     {
@@ -334,6 +383,7 @@ ProxyClient::connect(const std::filesystem::path& socket_path)
         return false;
     }
     leftover_.clear();
+    enable_keepalive(sock.get());
     fd_ = std::move(sock);
     return true;
 }
@@ -358,12 +408,18 @@ ProxyClient::rpc(std::string_view cmd, std::string& reply)
         {
             return false;
         }
-        const ipc_read_result st = ipc_read_line(fd_.get(), leftover_, reply, 10000);
+        const ipc_read_result st =
+            ipc_read_line(fd_.get(), leftover_, reply, k_ipc_rpc_timeout_ms);
         return st == ipc_read_result::line;
     };
     if (once())
     {
         return true;
+    }
+    /* Reconnect would HUP the daemon and RELEASE every held proxy. */
+    if (!held_.empty())
+    {
+        return false;
     }
     if (!reconnect())
     {
@@ -377,6 +433,7 @@ ProxyClient::reconnect()
 {
     leftover_.clear();
     fd_.reset();
+    held_.clear();
     if (socket_path_.empty())
     {
         return false;
@@ -401,7 +458,12 @@ ProxyClient::hello()
     {
         return false;
     }
-    return reply.starts_with("OK 1");
+    if (!reply.starts_with("OK 1"))
+    {
+        return false;
+    }
+    start_keepalive();
+    return true;
 }
 
 bool

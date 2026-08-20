@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -34,6 +35,12 @@ inline constexpr int k_acquire_wait_ms = 30000;
 
 /** Auto-start wait for PING after spawning proxchunkd. */
 inline constexpr int k_autostart_wait_ms = 45000;
+
+/** Application PING interval on the persistent UNIX socket. */
+inline constexpr int k_keepalive_ms = 5000;
+
+/** RPC reply wait (must cover a busy daemon; do not reconnect on a slow PING). */
+inline constexpr int k_ipc_rpc_timeout_ms = 30000;
 
 /**
  * @brief Result of @ref ipc_read_line.
@@ -148,6 +155,10 @@ struct acquired_proxy
 /**
  * @brief Persistent UNIX-socket client (one connection per process).
  *
+ * One SOCK_STREAM for the whole download. A keepalive thread sends
+ * `PING` every @ref k_keepalive_ms so the daemon never treats the
+ * client as dead (disconnect would RELEASE every held proxy).
+ *
  * Each RPC takes an internal mutex so worker threads may share one
  * instance. ACQUIRE retries locally for up to @ref k_acquire_wait_ms;
  * the daemon itself does not block.
@@ -222,6 +233,8 @@ private:
     [[nodiscard]] bool rpc(std::string_view cmd, std::string& reply);
     [[nodiscard]] bool reconnect();
     [[nodiscard]] bool spawn_daemon();
+    void start_keepalive();
+    void stop_keepalive();
 
     unique_fd fd_;
     std::string leftover_;
@@ -229,6 +242,7 @@ private:
     std::filesystem::path socket_path_;
     std::vector<std::string> daemon_extra_;
     std::vector<std::string> held_;
+    std::jthread keepalive_;
 };
 
 } // namespace proxchunk

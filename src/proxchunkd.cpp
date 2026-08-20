@@ -761,6 +761,10 @@ run_server(Options opt, int ready_fd)
                 }
                 Conn nc;
                 nc.fd.reset(cfd);
+                {
+                    int yes = 1;
+                    (void)::setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+                }
                 conns.push_back(std::move(nc));
             }
         }

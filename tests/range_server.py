@@ -53,9 +53,16 @@ def main() -> int:
                 return
             if rng and args.direct_probe_500 and not via:
                 spec = rng[len("bytes=") :].strip() if rng.startswith("bytes=") else ""
-                if spec == "0-0" or spec.startswith("0-0"):
-                    self.send_error(500, "direct range blocked")
-                    return
+                # Size probe uses a tiny first-byte range (0-0 or 0-8191).
+                if spec.startswith("0-"):
+                    end_s = spec.partition("-")[2]
+                    try:
+                        end_v = int(end_s) if end_s else 0
+                    except ValueError:
+                        end_v = 0
+                    if end_v <= 8191:
+                        self.send_error(500, "direct range blocked")
+                        return
             if not rng or not rng.startswith("bytes="):
                 self._send_full_headers(200, size)
                 self.wfile.write(blob)

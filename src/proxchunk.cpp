@@ -36,6 +36,7 @@
 #include <string_view>
 #include <thread>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 #include <vector>
 
@@ -52,15 +53,34 @@ using proxchunk::write_null;
 using proxchunk::write_to_file;
 using proxchunk::write_to_string;
 
-/** Pin a block of progress-bar rows and CUP to each on update (no newlines). */
+/**
+ * Pin a block of progress-bar rows. Raw mode, CUP only — never emit '\\n'
+ * (tui::progress_bar() prints a newline at 100% and would scroll VTE).
+ */
 struct BarLayout
 {
     int origin_row = 1;
-    int n_lines    = 0;
+    int n_lines = 0;
+    bool active = false;
+    termios cooked{};
+    bool have_cooked = false;
+
+    ~BarLayout()
+    {
+        finish();
+    }
 
     void begin(int lines)
     {
         tui::detail::set_stdout_unbuffered(true);
+        if (isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &cooked) == 0)
+        {
+            have_cooked = true;
+            termios raw = cooked;
+            cfmakeraw(&raw);
+            raw.c_lflag |= ISIG; /* keep Ctrl+C */
+            (void)tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+        }
         tui::detail::hide_cursor();
         std::cout << tui::line_wrap_off;
 
@@ -74,11 +94,9 @@ struct BarLayout
         }
 
         int row = 0;
-        if (isatty(STDIN_FILENO))
+        if (have_cooked)
         {
-            tui::detail::set_raw(true);
             auto pos = tui::detail::query_cursor_position(200000);
-            tui::detail::set_raw(false);
             if (pos && pos->row > 0)
             {
                 row = pos->row;
@@ -99,6 +117,7 @@ struct BarLayout
             row = 1;
         }
         origin_row = row;
+        active = true;
     }
 
     void go_line(int i) const
@@ -106,10 +125,21 @@ struct BarLayout
         std::cout << "\033[" << (origin_row + i) << ";1H";
     }
 
-    void finish() const
+    void finish()
     {
+        if (!active)
+        {
+            return;
+        }
         std::cout << "\033[" << (origin_row + n_lines) << ";1H" << tui::line_wrap;
         tui::detail::show_cursor();
+        std::cout.flush();
+        if (have_cooked)
+        {
+            (void)tcsetattr(STDIN_FILENO, TCSANOW, &cooked);
+            have_cooked = false;
+        }
+        active = false;
     }
 };
 
@@ -131,10 +161,8 @@ probe_curl_common(CURL* c, const std::string& url, const std::string& proxy)
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(c, CURLOPT_USERAGENT, k_user_agent);
     apply_curl_proxy(c, proxy, url.starts_with("https://"));
-    if (is_socks_proxy(proxy))
-    {
-        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
-    }
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(c, CURLOPT_TCP_KEEPALIVE, 1L);
 }
 
 [[nodiscard]] static std::expected<FileInfo, std::string>
@@ -146,40 +174,17 @@ probe_file(const std::string& url, const std::string& proxy)
         return std::unexpected("curl_easy_init failed");
     }
 
-    probe_curl_common(c, url, proxy);
-    curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
-    curl_easy_setopt(c, CURLOPT_HEADER, 0L);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
-
-    CURLcode res = curl_easy_perform(c);
     FileInfo info;
-
-    if (res == CURLE_OK)
-    {
-        curl_off_t cl = -1;
-        curl_easy_getinfo(c, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
-        if (cl > 0)
-        {
-            info.size = static_cast<std::int64_t>(cl);
-        }
-    }
-    curl_easy_cleanup(c);
-
-    c = curl_easy_init();
-    if (!c)
-    {
-        return std::unexpected("curl_easy_init failed");
-    }
-
     std::string headers;
     probe_curl_common(c, url, proxy);
-    curl_easy_setopt(c, CURLOPT_RANGE, "0-0");
+    /* 0-0 is rejected/hung by some CDNs; a tiny GET still yields Content-Range. */
+    curl_easy_setopt(c, CURLOPT_RANGE, "0-8191");
     curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, write_to_string);
     curl_easy_setopt(c, CURLOPT_HEADERDATA, &headers);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_null);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 6L);
 
-    res = curl_easy_perform(c);
+    CURLcode res = curl_easy_perform(c);
     long code = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
     curl_easy_cleanup(c);
@@ -448,13 +453,16 @@ probe_via_client(const std::string& url, proxchunk::ProxyClient* client)
         return probe_file(url, "");
     }
     std::string last = "no proxy available for probe";
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 12; ++i)
     {
         auto p = client->acquire();
         if (!p)
         {
-            break;
+            std::cerr << "[proxchunk] Waiting for a live proxy to probe file size...\n";
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            continue;
         }
+        std::cerr << "[proxchunk] Probing size via " << p->url << "\n";
         auto info = probe_file(url, p->url);
         (void)client->release(p->url, static_cast<bool>(info), 0.0);
         if (info)
@@ -462,6 +470,7 @@ probe_via_client(const std::string& url, proxchunk::ProxyClient* client)
             return info;
         }
         last = info.error();
+        std::cerr << "[proxchunk] Probe via proxy failed: " << last << "\n";
     }
     return std::unexpected(last);
 }
@@ -707,13 +716,17 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                     std::snprintf(msg, sizeof(msg), "idle");
                 }
                 chunk_bars.go_line(i);
-                tui::progress_bar(msg, now, want > 0 ? want : 1, 36, chunk_style);
+                auto st = tui::progress_bar_init(msg, want > 0 ? want : 1, 36, chunk_style);
+                tui::progress_bar_update(st, now);
             }
             char tmsg[80];
             std::snprintf(tmsg, sizeof(tmsg), "total  %.2f MB/s  %d/%zu", speed, finished.load(),
                           chunks.size());
             chunk_bars.go_line(n_bars);
-            tui::progress_bar(tmsg, live, download_size, 36, total_style);
+            auto tst = tui::progress_bar_init(tmsg, download_size > 0 ? download_size : 1, 36,
+                                              total_style);
+            tui::progress_bar_update(tst, live);
+            std::cout.flush();
         }
         else
         {
