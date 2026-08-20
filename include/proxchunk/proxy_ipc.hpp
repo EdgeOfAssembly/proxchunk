@@ -192,8 +192,12 @@ public:
 
     /**
      * @brief Retry ACQUIRE for up to 30 s (short sleeps on `ERR empty`).
+     *
+     * @param[in] skip Proxy URLs already tried for this chunk; the daemon
+     *            leases the next fastest row not in this list when possible.
      */
-    [[nodiscard]] std::optional<acquired_proxy> acquire();
+    [[nodiscard]] std::optional<acquired_proxy> acquire(
+        const std::vector<std::string>& skip = {});
 
     /**
      * @brief `RELEASE <url> ok|fail <mbps>`.

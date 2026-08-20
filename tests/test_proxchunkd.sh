@@ -43,6 +43,7 @@ echo "$help" | grep -q Usage || fail "help Usage"
 echo "$help" | grep -q -- '--foreground' || fail "help --foreground"
 echo "$help" | grep -q -- '--stop' || fail "help --stop"
 echo "$help" | grep -q -- '--status' || fail "help --status"
+echo "$help" | grep -q -- '--debug' || fail "help --debug"
 echo "$help" | grep -q -- '--no-fetch' || fail "help --no-fetch"
 echo "$help" | grep -qi 'no arguments' || fail "help should say no-args daemonizes"
 

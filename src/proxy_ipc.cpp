@@ -479,9 +479,23 @@ ProxyClient::ping()
 }
 
 std::optional<acquired_proxy>
-ProxyClient::acquire()
+ProxyClient::acquire(const std::vector<std::string>& skip)
 {
     /* Mutex is held only for the RPC so RELEASE from other workers is not blocked. */
+    std::string cmd = "ACQUIRE";
+    if (!skip.empty())
+    {
+        cmd += " skip";
+        for (const auto& u : skip)
+        {
+            cmd += ' ';
+            cmd += u;
+            if (cmd.size() > k_ipc_max_line - 64)
+            {
+                break;
+            }
+        }
+    }
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(k_acquire_wait_ms);
     while (std::chrono::steady_clock::now() < deadline)
@@ -490,7 +504,7 @@ ProxyClient::acquire()
         bool io_ok = false;
         {
             std::lock_guard g(mu_);
-            io_ok = rpc("ACQUIRE", reply);
+            io_ok = rpc(cmd, reply);
             if (!io_ok)
             {
                 (void)reconnect();

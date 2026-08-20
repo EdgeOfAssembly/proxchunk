@@ -68,6 +68,7 @@ struct ProxyEngineConfig
     bool fetch_public = true;      ///< False = @c --no-fetch.
     std::vector<std::string> extra_proxies;
     std::string log_prefix = "[proxchunkd]";
+    bool debug = false; ///< Log acquire/release/demote to stderr.
 };
 
 /**
@@ -141,10 +142,14 @@ public:
     void stop();
 
     /**
-     * @brief Non-blocking lease: first @c alive && !busy && fails < 4.
-     * @return A copy of the row with @c busy already set, or nullopt.
+     * @brief Non-blocking lease: fastest @c alive && !busy && fails < 4.
+     *
+     * @param[in] skip Addresses to avoid if any other row is free (next
+     *            in the speed-sorted list). If every live row is skipped
+     *            or busy, a skipped row may still be leased.
      */
-    [[nodiscard]] std::optional<Proxy> acquire();
+    [[nodiscard]] std::optional<Proxy> acquire(
+        const std::vector<std::string>& skip = {});
 
     /**
      * @brief Drop a lease. Unknown URLs are a no-op.

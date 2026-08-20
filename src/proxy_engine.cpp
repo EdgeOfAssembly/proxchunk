@@ -105,18 +105,49 @@ ProxyEngine::stop()
 }
 
 std::optional<Proxy>
-ProxyEngine::acquire()
+ProxyEngine::acquire(const std::vector<std::string>& skip)
 {
     std::unique_lock lock(mutex_);
-    for (auto& p : pool_)
-    {
-        if (p.alive && !p.busy && p.fails < 4)
+    auto pick = [&](bool honor_skip) -> std::optional<Proxy> {
+        for (auto& p : pool_)
         {
+            if (!p.alive || p.busy || p.fails >= 4)
+            {
+                continue;
+            }
+            if (honor_skip)
+            {
+                bool skipped = false;
+                for (const auto& s : skip)
+                {
+                    if (s == p.address)
+                    {
+                        skipped = true;
+                        break;
+                    }
+                }
+                if (skipped)
+                {
+                    continue;
+                }
+            }
             p.busy = true;
+            if (cfg_.debug)
+            {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf), "ACQUIRE %s mbps=%.4f fails=%d skip=%zu",
+                              p.address.c_str(), p.speed_mbps, p.fails, skip.size());
+                log(buf);
+            }
             return p;
         }
+        return std::nullopt;
+    };
+    if (auto p = pick(true))
+    {
+        return p;
     }
-    return std::nullopt;
+    return pick(false);
 }
 
 void
@@ -142,9 +173,18 @@ ProxyEngine::release(std::string_view url, bool success, double mbps)
         else
         {
             it->fails++;
+            it->speed_mbps *= 0.25; /* drop down the speed-sorted list */
             if (it->fails >= 4)
             {
                 it->alive = false;
+            }
+            if (cfg_.debug)
+            {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf), "RELEASE fail %s fails=%d mbps=%.4f %s",
+                              it->address.c_str(), it->fails, it->speed_mbps,
+                              it->alive ? "demoted" : "dead");
+                log(buf);
             }
         }
         if (!it->alive && !it->busy)

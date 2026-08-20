@@ -16,6 +16,12 @@ option(STATIC_LINK
 add_compile_options(-Wall -Wextra -Wpedantic -Wshadow)
 add_link_options(-Wl,--as-needed -Wl,-O1 -Wl,--hash-style=gnu -Wl,-z,relro -Wl,--build-id=none)
 
+# Default `make` is Debug: full symbols, no optimize, stack traces.
+set(CMAKE_CXX_FLAGS_DEBUG
+    "-g3 -O0 -fno-omit-frame-pointer -rdynamic"
+    CACHE STRING "Debug flags" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-rdynamic" CACHE STRING "Debug link flags" FORCE)
+
 set(CMAKE_CXX_FLAGS_RELEASE
     "-O3 -DNDEBUG -ffunction-sections -fdata-sections -march=x86-64 -mtune=generic"
     CACHE STRING "Release flags" FORCE)

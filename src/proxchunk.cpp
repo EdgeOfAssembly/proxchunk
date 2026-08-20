@@ -308,6 +308,7 @@ struct SlotProgress
     char                       ip[kIpv4FieldWidth + 1]{};
     std::atomic<std::int64_t>  last_byte{0};
     std::atomic<std::int64_t>  last_move_ms{0};
+    std::atomic<std::int64_t>  resume_base{0};
 
     SlotProgress()
     {
@@ -350,7 +351,9 @@ chunk_xfer(void* clientp, curl_off_t /*dltotal*/, curl_off_t dlnow, curl_off_t /
     }
     if (dlnow >= 0)
     {
-        s->now.store(static_cast<std::int64_t>(dlnow), std::memory_order_relaxed);
+        s->now.store(s->resume_base.load(std::memory_order_relaxed)
+                         + static_cast<std::int64_t>(dlnow),
+                     std::memory_order_relaxed);
     }
     return 0;
 }
@@ -365,20 +368,43 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
         return false;
     }
 
-    FILE* f = fopen(part_path.c_str(), "wb");
+    std::int64_t have = 0;
+    {
+        std::error_code ec;
+        if (fs::exists(part_path, ec) && !ec)
+        {
+            const auto sz = fs::file_size(part_path, ec);
+            if (!ec && sz > 0)
+            {
+                have = static_cast<std::int64_t>(sz);
+            }
+        }
+    }
+    const std::int64_t want = ch.end - ch.start + 1;
+    if (have >= want)
+    {
+        curl_easy_cleanup(c);
+        if (slot != nullptr)
+        {
+            slot->now.store(want, std::memory_order_relaxed);
+        }
+        return true;
+    }
+
+    FILE* f = std::fopen(part_path.c_str(), have > 0 ? "ab" : "wb");
     if (!f)
     {
         curl_easy_cleanup(c);
         return false;
     }
 
-    std::string range = std::to_string(ch.start) + "-" + std::to_string(ch.end);
+    const std::int64_t from = ch.start + have;
+    std::string range = std::to_string(from) + "-" + std::to_string(ch.end);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     apply_curl_proxy(c, proxy, url.starts_with("https://"));
     curl_easy_setopt(c, CURLOPT_RANGE, range.c_str());
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_to_file);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
-    const std::int64_t want = ch.end - ch.start + 1;
     /* Drop a crawl before it occupies a worker for minutes (was 1 KiB/s for 30 s). */
     const long timeout_s = std::max(45L, static_cast<long>(want / (32 * 1024) + 20));
     if (is_socks_proxy(proxy))
@@ -395,6 +421,8 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 8L);
     if (slot != nullptr)
     {
+        slot->resume_base.store(have, std::memory_order_relaxed);
+        slot->now.store(have, std::memory_order_relaxed);
         slot->last_byte.store(0);
         slot->last_move_ms.store(
             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -422,16 +450,24 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
     fclose(f);
     curl_easy_cleanup(c);
 
-    if (res != CURLE_OK || (code != 206 && code != 200)
-        || downloaded < static_cast<curl_off_t>(want * 95 / 100))
+    const std::int64_t got = have + static_cast<std::int64_t>(downloaded);
+    if (res != CURLE_OK || (code != 206 && code != 200) || got < want)
     {
-        fs::remove(part_path);
+        std::error_code ec;
+        if (have <= 0)
+        {
+            fs::remove(part_path, ec);
+        }
+        else
+        {
+            fs::resize_file(part_path, static_cast<std::uintmax_t>(have), ec);
+        }
         return false;
     }
 
     if (slot != nullptr)
     {
-        slot->now.store(static_cast<std::int64_t>(downloaded), std::memory_order_relaxed);
+        slot->now.store(want, std::memory_order_relaxed);
     }
     return true;
 }
@@ -587,13 +623,14 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
     std::mutex work_mtx;
     struct Job
     {
-        proxchunk::chunk ch;
-        int              attempts = 0;
+        proxchunk::chunk         ch;
+        int                      attempts = 0;
+        std::vector<std::string> tried;
     };
     std::deque<Job> jobs;
     for (const auto& c : chunks)
     {
-        jobs.push_back(Job{c, 0});
+        jobs.push_back(Job{c, 0, {}});
     }
     std::atomic<int> inflight{0};
 
@@ -636,11 +673,12 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
             std::optional<proxchunk::acquired_proxy> px;
             if (!opt.direct && client != nullptr)
             {
-                px = client->acquire();
+                px = client->acquire(job.tried);
                 if (px)
                 {
                     proxy_addr = px->url;
                     sp.set_ip(proxy_addr);
+                    job.tried.push_back(px->url);
                 }
             }
             else
@@ -652,7 +690,6 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
             if (opt.direct || px)
             {
                 fs::path part = tmpdir / ("part." + std::to_string(ch.id));
-                sp.now.store(0);
                 auto t0 = std::chrono::steady_clock::now();
                 ok = download_chunk(url, ch, proxy_addr, part, &sp);
                 auto secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
@@ -667,6 +704,17 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                     (void)client->release(px->url, ok, mbps);
                 }
             }
+            else if (!opt.direct)
+            {
+                /* Pool empty: wait, do not burn a try. */
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                {
+                    std::lock_guard g(work_mtx);
+                    jobs.push_front(job);
+                }
+                inflight.fetch_sub(1);
+                continue;
+            }
 
             if (ok)
             {
@@ -677,15 +725,15 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
             }
             else
             {
-                sp.now.store(0, std::memory_order_relaxed);
                 sp.active.store(false, std::memory_order_relaxed);
                 job.attempts++;
-                if (job.attempts < 8)
+                constexpr int k_chunk_tries = 3;
+                if (job.attempts < k_chunk_tries)
                 {
                     if (!use_bar)
                     {
                         std::cerr << "[proxchunk] Requeue chunk " << ch.id << " (try "
-                                  << job.attempts + 1 << "/8)\n";
+                                  << job.attempts + 1 << "/" << k_chunk_tries << ")\n";
                     }
                     std::lock_guard g(work_mtx);
                     jobs.push_back(job);
@@ -695,7 +743,8 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                     failed.fetch_add(1);
                     if (!use_bar)
                     {
-                        std::cerr << "[proxchunk] Failed chunk " << ch.id << " after retries\n";
+                        std::cerr << "[proxchunk] Failed chunk " << ch.id << " after "
+                                  << k_chunk_tries << " proxies\n";
                     }
                 }
             }

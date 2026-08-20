@@ -24,7 +24,14 @@ def main() -> int:
         action="store_true",
         help="HTTP 500 on Range 0-0 unless X-Proxchunk-Proxy is set",
     )
+    parser.add_argument(
+        "--fail-first",
+        type=int,
+        default=0,
+        help="Respond 500 to the first N Range GETs, then succeed",
+    )
     args = parser.parse_args()
+    fails_left = {"n": max(0, args.fail_first)}
     size = args.bytes if args.bytes > 0 else args.mb * 1024 * 1024
     blob = bytes([0x5A]) * size
 
@@ -48,6 +55,19 @@ def main() -> int:
         def do_GET(self) -> None:
             rng = self.headers.get("Range")
             via = self.headers.get("X-Proxchunk-Proxy") == "1"
+            if rng and fails_left["n"] > 0 and rng.startswith("bytes="):
+                spec = rng[len("bytes=") :].strip()
+                start_s, _, end_s = spec.partition("-")
+                try:
+                    a = int(start_s) if start_s else 0
+                    b = int(end_s) if end_s else a
+                    span = b - a + 1
+                except ValueError:
+                    span = 0
+                if span > 32 * 1024:
+                    fails_left["n"] -= 1
+                    self.send_error(500, "injected fail")
+                    return
             if rng and args.require_proxy_header and not via:
                 self.send_error(500, "direct range blocked")
                 return

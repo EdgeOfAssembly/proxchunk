@@ -60,6 +60,23 @@ echo "$log3" | grep -q "Split into 4 chunks of ~1 MB" \
     || { echo "$log3" >&2; echo "FAIL: 4MiB file -s 1 should be 4 chunks" >&2; exit 1; }
 cmp -s "$OUT" "$REF"
 
+# Injected Range 500s must requeue (3 tries) and still finish.
+kill "$srv" 2>/dev/null || true
+wait "$srv" 2>/dev/null || true
+PORTF=$((PORT + 3))
+python3 "$ROOT/tests/range_server.py" --port "$PORTF" --mb "$MB" --fail-first 2 &
+srv=$!
+sleep 0.3
+logf=$("$BIN" --direct --no-progress --no-tor --no-cache --no-user-proxies \
+  -c 2 -o "$OUT" "http://127.0.0.1:${PORTF}/blob" 2>&1) || {
+    echo "$logf" >&2
+    echo "FAIL: fail-first download" >&2
+    exit 1
+}
+echo "$logf" | grep -q "Requeue chunk" \
+    || { echo "$logf" >&2; echo "FAIL: expected requeue after injected 500" >&2; exit 1; }
+cmp -s "$OUT" "$REF" || { echo "$logf" >&2; echo "FAIL: fail-first bytes" >&2; exit 1; }
+
 # Local server without Range must fail.
 python3 - "$PORT" <<'PY' &
 import sys

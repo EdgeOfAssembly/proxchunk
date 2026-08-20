@@ -59,6 +59,7 @@ struct Options
     bool use_tor = true;
     bool fetch_public = true;
     bool use_user_list = true;
+    bool debug = false;
     std::vector<std::string> extra_proxies;
     std::vector<std::string> proxy_files;
 };
@@ -194,6 +195,7 @@ usage(const char* prog)
         << "      --proxy-file <f>  Extra proxy list (ip:port or URL per line)\n"
         << "      --no-user-proxies Do not load ~/.config/proxchunk/proxies.txt\n"
         << "      --log-file <path> Log file when daemonized (default: cache dir)\n"
+        << "      --debug           Log IPC (ACQUIRE/RELEASE/HELLO) to stderr\n"
         << "  -h, --help            Show this help\n"
         << "  -v, --version         Print version\n";
 }
@@ -421,9 +423,23 @@ enum class CmdResult
     stop_daemon,
 };
 
+void
+ipc_dbg(bool debug, std::string_view dir, std::string_view line)
+{
+    if (!debug)
+    {
+        return;
+    }
+    if (line.starts_with("PING") || line == "OK pong")
+    {
+        return;
+    }
+    std::cerr << "[proxchunkd] ipc " << dir << " " << line << "\n";
+}
+
 CmdResult
 handle_line(Conn& c, const std::string& line, proxchunk::ProxyEngine& engine,
-            std::atomic<bool>& stopping)
+            std::atomic<bool>& stopping, bool debug)
 {
     auto tok = proxchunk::ipc_split(line);
     if (tok.empty())
@@ -435,8 +451,9 @@ handle_line(Conn& c, const std::string& line, proxchunk::ProxyEngine& engine,
         if (tok.size() == 2 && tok[0] == "HELLO" && tok[1] == "1")
         {
             c.greeted = true;
-            (void)proxchunk::ipc_write_line(c.fd.get(),
-                                            std::string("OK 1 proxchunkd ") + PROXCHUNK_VERSION);
+            const std::string reply = std::string("OK 1 proxchunkd ") + PROXCHUNK_VERSION;
+            ipc_dbg(debug, ">>", reply);
+            (void)proxchunk::ipc_write_line(c.fd.get(), reply);
             return CmdResult::ok;
         }
         (void)proxchunk::ipc_write_line(c.fd.get(), "ERR protocol");
@@ -462,15 +479,25 @@ handle_line(Conn& c, const std::string& line, proxchunk::ProxyEngine& engine,
             (void)proxchunk::ipc_write_line(c.fd.get(), "ERR shutting-down");
             return CmdResult::ok;
         }
-        auto p = engine.acquire();
+        std::vector<std::string> skip;
+        if (tok.size() >= 2 && tok[1] == "skip")
+        {
+            for (std::size_t i = 2; i < tok.size(); ++i)
+            {
+                skip.push_back(tok[i]);
+            }
+        }
+        auto p = engine.acquire(skip);
         if (!p)
         {
+            ipc_dbg(debug, ">>", "ERR empty");
             (void)proxchunk::ipc_write_line(c.fd.get(), "ERR empty");
             return CmdResult::ok;
         }
         c.held.push_back(p->address);
         char buf[proxchunk::k_ipc_max_line];
         std::snprintf(buf, sizeof(buf), "OK %s %.4f", p->address.c_str(), p->speed_mbps);
+        ipc_dbg(debug, ">>", buf);
         if (!proxchunk::ipc_write_line(c.fd.get(), buf))
         {
             return CmdResult::close;
@@ -496,6 +523,7 @@ handle_line(Conn& c, const std::string& line, proxchunk::ProxyEngine& engine,
         }
         engine.release(tok[1], tok[2] == "ok", mbps);
         erase_one_held(c, tok[1]);
+        ipc_dbg(debug, ">>", "OK");
         (void)proxchunk::ipc_write_line(c.fd.get(), "OK");
         return CmdResult::ok;
     }
@@ -633,6 +661,7 @@ run_server(Options opt, int ready_fd)
     cfg.use_tor = opt.use_tor;
     cfg.fetch_public = opt.fetch_public;
     cfg.extra_proxies = std::move(opt.extra_proxies);
+    cfg.debug = opt.debug;
 
     proxchunk::ProxyEngine engine(std::move(cfg));
     FgBar bar;
@@ -806,7 +835,8 @@ run_server(Options opt, int ready_fd)
                     drop_conn(conns[i], engine);
                     break;
                 }
-                const CmdResult cr = handle_line(conns[i], line, engine, stopping);
+                ipc_dbg(opt.debug, "<<", line);
+                const CmdResult cr = handle_line(conns[i], line, engine, stopping, opt.debug);
                 if (cr == CmdResult::close)
                 {
                     drop_conn(conns[i], engine);
@@ -1116,6 +1146,10 @@ parse_args(int argc, char** argv, Options& opt)
         else if (a == "--log-file")
         {
             opt.log_path = need(i, "--log-file");
+        }
+        else if (a == "--debug")
+        {
+            opt.debug = true;
         }
         else
         {
