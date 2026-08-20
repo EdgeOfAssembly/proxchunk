@@ -7,6 +7,7 @@
  */
 
 #include "proxchunk/curl_util.hpp"
+#include "proxchunk/ia_size.hpp"
 #include "proxchunk/plan.hpp"
 #include "proxchunk/proxy_ipc.hpp"
 #include "proxchunk/repl.hpp"
@@ -446,8 +447,63 @@ struct RunOptions
 };
 
 [[nodiscard]] static std::expected<FileInfo, std::string>
+probe_archive_org_metadata(const std::string& url)
+{
+    const auto parsed = proxchunk::ia_parse_download_url(url);
+    if (!parsed)
+    {
+        return std::unexpected("not an archive.org download URL");
+    }
+    const std::string meta_url = "https://archive.org/metadata/" + parsed->first;
+    CURL* c = curl_easy_init();
+    if (!c)
+    {
+        return std::unexpected("curl_easy_init failed");
+    }
+    std::string body;
+    curl_easy_setopt(c, CURLOPT_URL, meta_url.c_str());
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(c, CURLOPT_USERAGENT, k_user_agent);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_to_string);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
+    const CURLcode res = curl_easy_perform(c);
+    long code = 0;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+    curl_easy_cleanup(c);
+    if (res != CURLE_OK)
+    {
+        return std::unexpected(std::string("metadata fetch: ") + curl_easy_strerror(res));
+    }
+    if (code != 200)
+    {
+        return std::unexpected("metadata HTTP " + std::to_string(code));
+    }
+    const auto sz = proxchunk::ia_size_from_metadata_json(body, parsed->second);
+    if (!sz)
+    {
+        return std::unexpected("file not listed in archive.org metadata");
+    }
+    FileInfo info;
+    info.size = *sz;
+    info.accepts_ranges = true;
+    return info;
+}
+
+[[nodiscard]] static std::expected<FileInfo, std::string>
 probe_via_client(const std::string& url, proxchunk::ProxyClient* client)
 {
+    if (auto ia = probe_archive_org_metadata(url); ia)
+    {
+        std::cerr << "[proxchunk] Size from archive.org metadata: " << ia->size << " bytes\n";
+        return ia;
+    }
+    if (proxchunk::ia_parse_download_url(url))
+    {
+        std::cerr << "[proxchunk] archive.org metadata unavailable, trying Range probe\n";
+    }
     if (client == nullptr)
     {
         return probe_file(url, "");
@@ -545,6 +601,7 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
     n_workers = std::max(1, n_workers);
     /* One TUI bar per live connection, not one per planned slice. */
     std::vector<SlotProgress> slots(static_cast<std::size_t>(n_workers));
+    const bool use_bar = opt.progress && isatty(STDOUT_FILENO);
 
     auto worker_fn = [&](int worker_id) {
         auto& sp = slots[static_cast<std::size_t>(worker_id)];
@@ -625,28 +682,26 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 job.attempts++;
                 if (job.attempts < 8)
                 {
-                    std::cerr << "[proxchunk] Requeue chunk " << ch.id << " (try "
-                              << job.attempts + 1 << "/8)\n";
+                    if (!use_bar)
+                    {
+                        std::cerr << "[proxchunk] Requeue chunk " << ch.id << " (try "
+                                  << job.attempts + 1 << "/8)\n";
+                    }
                     std::lock_guard g(work_mtx);
                     jobs.push_back(job);
                 }
                 else
                 {
                     failed.fetch_add(1);
-                    std::cerr << "[proxchunk] Failed chunk " << ch.id << " after retries\n";
+                    if (!use_bar)
+                    {
+                        std::cerr << "[proxchunk] Failed chunk " << ch.id << " after retries\n";
+                    }
                 }
             }
             inflight.fetch_sub(1);
         }
     };
-
-    std::vector<std::jthread> workers;
-    for (int i = 0; i < n_workers; ++i)
-    {
-        workers.emplace_back([&, i]() { worker_fn(i); });
-    }
-
-    const bool use_bar = opt.progress && isatty(STDOUT_FILENO);
 
     tui::progress_bar_style chunk_style = tui::progress_bar_styles::blocks_smooth();
     chunk_style.use_gradient = true;
@@ -665,6 +720,12 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
     if (use_bar)
     {
         chunk_bars.begin(n_bars + 1);
+    }
+
+    std::vector<std::jthread> workers;
+    for (int i = 0; i < n_workers; ++i)
+    {
+        workers.emplace_back([&, i]() { worker_fn(i); });
     }
 
     auto live_bytes = [&]() -> std::int64_t {

@@ -3,6 +3,7 @@
  * @brief Unit tests for chunk planning and output names.
  */
 
+#include "proxchunk/ia_size.hpp"
 #include "proxchunk/plan.hpp"
 
 #include <cassert>
@@ -64,6 +65,19 @@ main()
     assert(n_one.size() == 1 && n_one[0].start == 0 && n_one[0].end == 9);
     assert(plan_chunks_n(0, 8).empty());
     assert(plan_chunks_n(10, 0).empty());
+
+    using proxchunk::ia_parse_download_url;
+    using proxchunk::ia_size_from_metadata_json;
+    using proxchunk::url_decode;
+    assert(url_decode("Hexen%20II%20%28USA%29.zip") == "Hexen II (USA).zip");
+    auto ia = ia_parse_download_url(
+        "https://archive.org/download/HexenIIUSA/Hexen%20II%20(USA).zip");
+    assert(ia && ia->first == "HexenIIUSA" && ia->second == "Hexen II (USA).zip");
+    assert(!ia_parse_download_url("https://example.com/a.zip"));
+    const char* meta =
+        "{\"files\":[{\"name\":\"Hexen II (USA).zip\",\"size\":\"606988132\",\"format\":\"ZIP\"}]}";
+    auto ia_sz = ia_size_from_metadata_json(meta, "Hexen II (USA).zip");
+    assert(ia_sz && *ia_sz == 606988132);
 
     const char* tmp = "/tmp/proxchunk-test-proxies.txt";
     {
