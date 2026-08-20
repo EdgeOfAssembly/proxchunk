@@ -17,7 +17,7 @@ mkdir -p "$STAGE/icons" "$STAGE/doc"
 
 install -m 0755 "$BIN" "$STAGE/proxchunk"
 install -m 0755 "$ROOT/scripts/install.sh" "$STAGE/install.sh"
-install -m 0755 "$ROOT/scripts/install-desktop.sh" "$STAGE/install-desktop.sh"
+install -m 0755 "$ROOT/scripts/uninstall.sh" "$STAGE/uninstall.sh"
 install -m 0644 "$ROOT/desktop/proxchunk.desktop" "$STAGE/proxchunk.desktop"
 install -m 0644 "$ROOT/README.md" "$STAGE/README.md"
 install -m 0644 "$ROOT/LICENSE" "$STAGE/LICENSE"
@@ -32,7 +32,9 @@ proxchunk $VER — portable tree
   cd proxchunk-$VER
   ./proxchunk --help              # use immediately, no install
   sudo ./install.sh               # /usr/local/bin, man, desktop, icons
-  ./install-desktop.sh            # user menu only (no sudo)
+  sudo ./uninstall.sh             # remove those files
+  ./install.sh --user             # ~/.local instead of /usr/local
+  ./uninstall.sh --user [--purge] # --purge also drops ~/.config and ~/.cache
 
 After sudo ./install.sh, "proxchunk" and "man proxchunk" work from any directory.
 EOF

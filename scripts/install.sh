@@ -1,12 +1,35 @@
 #!/usr/bin/env bash
-# System install into PREFIX (default /usr/local). Re-execs with sudo if needed.
+# Install proxchunk. Default PREFIX=/usr/local (sudo if needed).
+#   ./install.sh           system
+#   ./install.sh --user    ~/.local (no sudo)
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
+USER_INSTALL=0
 PREFIX=${PREFIX:-/usr/local}
 
-if [[ ${EUID} -ne 0 ]]; then
+usage() {
+    echo "Usage: $0 [--user] [--prefix DIR]"
+}
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --user) USER_INSTALL=1; shift ;;
+        --prefix) PREFIX=$2; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 1 ;;
+    esac
+done
+
+if [[ $USER_INSTALL -eq 1 ]]; then
+    PREFIX=${PREFIX:-$HOME/.local}
+    if [[ $PREFIX == /usr/local ]]; then
+        PREFIX=$HOME/.local
+    fi
+fi
+
+if [[ $USER_INSTALL -eq 0 && ${EUID} -ne 0 ]]; then
     if [[ ! -d $PREFIX/bin || ! -w $PREFIX/bin ]]; then
-        exec sudo "$0" "$@"
+        exec sudo "$0" ${USER_INSTALL:+--user} --prefix "$PREFIX"
     fi
 fi
 

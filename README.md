@@ -106,9 +106,9 @@ proxchunk --show-proxies -c 8 -s 8 -o file.bin 'https://example.com/file.bin'
 
 ```text
 proxchunk-1.7/
-  proxchunk              musl-static binary (run in place)
-  install.sh             sudo → /usr/local/bin, man, desktop, icons
-  install-desktop.sh     user menu only (no sudo)
+  proxchunk           musl-static binary (run in place)
+  install.sh          sudo → /usr/local (or --user → ~/.local)
+  uninstall.sh        reverse of install.sh (--purge drops user cache/config)
   proxchunk.desktop
   icons/
   doc/proxchunk.1
@@ -121,6 +121,7 @@ tar -xzf proxchunk-1.7.tar.gz
 cd proxchunk-1.7
 ./proxchunk --help          # works immediately
 sudo ./install.sh           # /usr/local/bin, man, desktop, icons
+sudo ./uninstall.sh         # remove the install
 ```
 
 ## License
