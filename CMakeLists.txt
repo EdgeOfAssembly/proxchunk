@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(proxchunk VERSION 1.7 LANGUAGES CXX)
+project(proxchunk VERSION 1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,7 +14,7 @@ option(STATIC_LINK
     OFF)
 
 add_compile_options(-Wall -Wextra -Wpedantic -Wshadow)
-add_link_options(-Wl,--as-needed -Wl,-O1 -Wl,--hash-style=gnu -Wl,-z,relro)
+add_link_options(-Wl,--as-needed -Wl,-O1 -Wl,--hash-style=gnu -Wl,-z,relro -Wl,--build-id=none)
 
 set(CMAKE_CXX_FLAGS_RELEASE
     "-O3 -DNDEBUG -ffunction-sections -fdata-sections -march=x86-64 -mtune=generic"

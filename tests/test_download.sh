@@ -20,9 +20,26 @@ mb = int(sys.argv[1])
 open(sys.argv[2], "wb").write(bytes([0x5A]) * mb * 1024 * 1024)
 PY
 
-"$BIN" --direct --no-progress --no-tor --no-cache --no-user-proxies \
-  -c 4 -s 1 -o "$OUT" "http://127.0.0.1:${PORT}/blob"
+ncpu=$(nproc)
+log=$("$BIN" --direct --no-progress --no-tor --no-cache --no-user-proxies \
+  -s 1 -o "$OUT" "http://127.0.0.1:${PORT}/blob" 2>&1) || {
+    echo "$log" >&2
+    echo "FAIL: default-concurrent download" >&2
+    exit 1
+}
+echo "$log" | grep -q "concurrent=${ncpu} " \
+    || { echo "$log" >&2; echo "FAIL: default concurrent want ${ncpu}" >&2; exit 1; }
 test "$(stat -c %s "$OUT")" -eq "$(stat -c %s "$REF")"
+cmp -s "$OUT" "$REF"
+
+log2=$("$BIN" --direct --no-progress --no-tor --no-cache --no-user-proxies \
+  -c 2 -s 1 -o "$OUT" "http://127.0.0.1:${PORT}/blob" 2>&1) || {
+    echo "$log2" >&2
+    echo "FAIL: -c 2 download" >&2
+    exit 1
+}
+echo "$log2" | grep -q "concurrent=2 " \
+    || { echo "$log2" >&2; echo "FAIL: -c 2 concurrent override" >&2; exit 1; }
 cmp -s "$OUT" "$REF"
 
 # Local server without Range must fail.

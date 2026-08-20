@@ -1,4 +1,4 @@
-.TH PROXCHUNK 1 "2026-08-20" "proxchunk 1.7" "User Commands"
+.TH PROXCHUNK 1 "2026-08-20" "proxchunk 1.0" "User Commands"
 .SH NAME
 proxchunk \- multi-proxy HTTP Range chunked downloader
 .SH SYNOPSIS
@@ -28,7 +28,8 @@ Default: last path segment of
 .IR URL .
 .TP
 .BR \-c ", " \-\-concurrent " " \fIN\fR
-Maximum concurrent chunk downloads (default: 16).
+Maximum concurrent chunk downloads.
+Default: number of logical CPUs on this machine.
 .TP
 .BR \-s ", " \-\-chunk\-mb " " \fIMB\fR
 Chunk size in mebibytes (default: 8).

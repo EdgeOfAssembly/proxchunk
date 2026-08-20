@@ -1,0 +1,4 @@
+dist/ export-ignore
+proxchunk-musl-static export-ignore
+*.dat export-ignore
+*.zip export-ignore

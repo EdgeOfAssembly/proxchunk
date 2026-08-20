@@ -15,4 +15,9 @@ scripts/__pycache__/
 tmpcfg/
 proxchunk-musl-static
 /dist/
+scripts/demo-install.sh
+scripts/shot24.py
+scripts/xmux-demo.sh
+scripts/ia-compare.sh
+scripts/run-proxy.sh
 

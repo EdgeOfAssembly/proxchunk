@@ -26,15 +26,10 @@ Optimized release:
 make release
 ```
 
-Fully static **musl** binary (portable across Linux distros; no glibc NSS):
-
-```bash
-# Alpine chroot at /mnt/alpine — see scripts/build-musl-static.sh
-# Flags: -static -static-libgcc -static-libstdc++ -fno-pie -no-pie
-```
-
-Gentoo glibc `-static` (`make release-static`) also produces a static ELF, but
-glibc warns about `getaddrinfo`/`dlopen`; prefer the musl build for shipping.
+A portable fully static **musl** binary (no glibc NSS) is built with
+`-static -static-libgcc -static-libstdc++ -fno-pie -no-pie -Wl,--build-id=none`
+against musl libcurl. `make release-static` is a glibc static link; prefer musl
+for shipping to other machines.
 
 ## Usage
 
@@ -45,7 +40,7 @@ proxchunk [options] <URL>
 | Option | Meaning |
 |--------|---------|
 | `-o`, `--output FILE` | Output path (default: URL basename) |
-| `-c`, `--concurrent N` | Max parallel chunks (default: 16) |
+| `-c`, `--concurrent N` | Max parallel chunks (default: logical CPU count) |
 | `-s`, `--chunk-mb MB` | Chunk size in MiB (default: 8) |
 | `-p`, `--proxies N` | Live proxies to keep (default: 40) |
 | `-r`, `--refresh SEC` | Pool refresh interval (default: 180) |
@@ -99,29 +94,19 @@ proxchunk --show-proxies -c 8 -s 8 -o file.bin 'https://example.com/file.bin'
 | `~/.config/proxchunk/proxies.txt` | Optional user proxy list |
 | `~/.cache/proxchunk/proxies.txt` | Scored cache from previous runs |
 
-## Portable tarball
+## Release tarballs
 
-`make dist` (after `scripts/build-musl-static.sh`) writes
-`dist/proxchunk-<version>.tar.gz`. Extract anywhere:
+`make dist` writes:
 
-```text
-proxchunk-1.7/
-  proxchunk           musl-static binary (run in place)
-  install.sh          sudo → /usr/local (or --user → ~/.local)
-  uninstall.sh        reverse of install.sh (--purge drops user cache/config)
-  proxchunk.desktop
-  icons/
-  doc/proxchunk.1
-  README.md
-  LICENSE
-```
+- `dist/proxchunk-<version>-<arch>.tar.gz` — binary tree (run `./proxchunk`, optional `sudo ./install.sh`). README in that archive is end-user only (no build steps).
+- `dist/proxchunk-<version>-src.tar.gz` — this source tree (`make` / `make test`)
 
 ```bash
-tar -xzf proxchunk-1.7.tar.gz
-cd proxchunk-1.7
-./proxchunk --help          # works immediately
-sudo ./install.sh           # /usr/local/bin, man, desktop, icons
-sudo ./uninstall.sh         # remove the install
+tar -xzf proxchunk-1.0-x86_64.tar.gz
+cd proxchunk-1.0-x86_64
+./proxchunk --help
+sudo ./install.sh
+sudo ./uninstall.sh
 ```
 
 ## License

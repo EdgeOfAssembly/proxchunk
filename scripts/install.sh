@@ -83,7 +83,6 @@ if command -v gtk-update-icon-cache >/dev/null && [[ -d $HICOLOR ]]; then
 fi
 command -v gtk4-update-icon-cache >/dev/null && [[ -d $HICOLOR ]] \
     && gtk4-update-icon-cache -f -t "$HICOLOR" 2>/dev/null || true
-# Refresh this session's panel if present (other machines: log out or restart panel)
 command -v lxpanelctl >/dev/null && lxpanelctl restart 2>/dev/null || true
 command -v xfce4-panel >/dev/null && xfce4-panel -r 2>/dev/null || true
 
@@ -92,4 +91,3 @@ echo "  $PREFIX/bin/proxchunk"
 echo "  $PREFIX/share/pixmaps/proxchunk.png"
 echo "  $PREFIX/share/icons/hicolor/{16x16..512x512,scalable}/apps/proxchunk.*"
 echo "  $PREFIX/share/applications/proxchunk.desktop"
-echo "If the menu still shows a generic icon, log out or restart the panel."

@@ -38,7 +38,7 @@
 #include <vector>
 
 #ifndef PROXCHUNK_VERSION
-#define PROXCHUNK_VERSION "1.7"
+#define PROXCHUNK_VERSION "1.0"
 #endif
 
 namespace fs = std::filesystem;
@@ -1112,7 +1112,7 @@ download_chunk(const std::string& url, const proxchunk::chunk& ch, const std::st
 
 struct RunOptions
 {
-    int  max_concurrent = 16;
+    int  max_concurrent = 0; ///< filled from hardware_concurrency unless -c
     int  chunk_mb       = 8;
     std::int64_t limit_bytes = 0; ///< 0 = full file
     bool direct         = false;
@@ -1438,7 +1438,7 @@ usage(const char* prog)
         << "       " << prog << " <URL> [options]\n"
         << "\n"
         << "  -o, --output <file>   Output path (default: basename of URL)\n"
-        << "  -c, --concurrent <N>  Max concurrent chunk downloads (default: 16)\n"
+        << "  -c, --concurrent <N>  Max concurrent chunk downloads (default: logical CPUs)\n"
         << "  -s, --chunk-mb <MB>   Chunk size in megabytes (default: 8)\n"
         << "  -p, --proxies <N>     Max proxies to keep in pool (default: 40)\n"
         << "  -r, --refresh <sec>   Proxy refresh interval (default: 180)\n"
@@ -1469,7 +1469,8 @@ main(int argc, char* argv[])
 
     std::string url;
     std::string out_path;
-    int concurrent = 16;
+    int concurrent = 0;
+    bool concurrent_set = false;
     int chunk_mb   = 8;
     int max_proxies = 40;
     int refresh_sec = 180;
@@ -1508,6 +1509,7 @@ main(int argc, char* argv[])
         else if (a == "-c" || a == "--concurrent")
         {
             concurrent = std::atoi(need("-c"));
+            concurrent_set = true;
         }
         else if (a == "-s" || a == "--chunk-mb")
         {
@@ -1571,6 +1573,12 @@ main(int argc, char* argv[])
             usage(argv[0]);
             return 1;
         }
+    }
+
+    if (!concurrent_set)
+    {
+        unsigned ncpu = std::thread::hardware_concurrency();
+        concurrent = (ncpu == 0) ? 4 : static_cast<int>(ncpu);
     }
 
     opt.max_concurrent = concurrent;

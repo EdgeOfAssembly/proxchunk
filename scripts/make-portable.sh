@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Pack musl-static proxchunk into proxchunk-<ver>.tar.gz (unix permissions).
+# Binary package: proxchunk-<ver>-<arch>.tar.gz (runnable tree only).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-VER=${VER:-1.7}
+VER=${VER:-1.0}
+ARCH=${ARCH:-$(uname -m)}
 BIN=${BIN:-$ROOT/proxchunk-musl-static}
-STAGE=$ROOT/dist/proxchunk-$VER
-TGZ=$ROOT/dist/proxchunk-$VER.tar.gz
+NAME=proxchunk-${VER}-${ARCH}
+STAGE=$ROOT/dist/$NAME
+TGZ=$ROOT/dist/${NAME}.tar.gz
 
 if [[ ! -x $BIN ]]; then
     echo "missing $BIN — run scripts/build-musl-static.sh first" >&2
@@ -19,7 +21,7 @@ install -m 0755 "$BIN" "$STAGE/proxchunk"
 install -m 0755 "$ROOT/scripts/install.sh" "$STAGE/install.sh"
 install -m 0755 "$ROOT/scripts/uninstall.sh" "$STAGE/uninstall.sh"
 install -m 0644 "$ROOT/desktop/proxchunk.desktop" "$STAGE/proxchunk.desktop"
-install -m 0644 "$ROOT/README.md" "$STAGE/README.md"
+install -m 0644 "$ROOT/README.user.md" "$STAGE/README.md"
 install -m 0644 "$ROOT/LICENSE" "$STAGE/LICENSE"
 install -m 0644 "$ROOT/doc/proxchunk.1" "$STAGE/doc/proxchunk.1"
 install -m 0644 "$ROOT/icons/proxchunk.svg" "$STAGE/icons/proxchunk.svg"
@@ -31,23 +33,8 @@ if [[ -d $ROOT/icons/pixmaps ]]; then
     cp -a "$ROOT/icons/pixmaps" "$STAGE/icons/"
 fi
 
-cat > "$STAGE/README-PORTABLE.txt" <<EOF
-proxchunk $VER — portable tree
-
-  tar -xzf proxchunk-$VER.tar.gz
-  cd proxchunk-$VER
-  ./proxchunk --help              # use immediately, no install
-  sudo ./install.sh               # /usr/local/bin, man, desktop, icons
-  sudo ./uninstall.sh             # remove those files
-  ./install.sh --user             # ~/.local instead of /usr/local
-  ./uninstall.sh --user [--purge] # --purge also drops ~/.config and ~/.cache
-
-After sudo ./install.sh, "proxchunk" and "man proxchunk" work from any directory.
-EOF
-chmod 0644 "$STAGE/README-PORTABLE.txt"
-
 rm -f "$TGZ"
-tar -C "$ROOT/dist" -czf "$TGZ" "proxchunk-$VER"
+tar -C "$ROOT/dist" -czf "$TGZ" "$NAME"
 echo "wrote $TGZ"
 tar -tzf "$TGZ"
 ls -l "$TGZ"
