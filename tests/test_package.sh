@@ -20,7 +20,6 @@ prefix=proxchunk-${VER}-${ARCH}
 
 grep -qx "${prefix}/proxchunk" "$STAGE/bin.list" || fail "binary missing proxchunk"
 grep -qx "${prefix}/proxchunk-gui" "$STAGE/bin.list" || fail "binary missing proxchunk-gui"
-grep -q "${prefix}/lib/libgtk-3.so" "$STAGE/bin.list" || fail "binary missing bundled libgtk-3"
 if grep -E 'ld-musl|libc\.musl|libexec/proxchunk-gui' "$STAGE/bin.list" | grep -q .; then
     fail "binary tarball still has musl GUI bits"
 fi
@@ -58,6 +57,10 @@ echo "gui file: $ginfo"
 echo "$ginfo" | grep -qi 'ld-linux' || fail "proxchunk-gui should be a glibc ELF (ld-linux)"
 echo "$ginfo" | grep -qi 'ld-musl' && fail "proxchunk-gui must not be musl"
 echo "$ginfo" | grep -qi 'BuildID' && fail "proxchunk-gui still has ELF BuildID"
+needed=$(readelf -d "$B/proxchunk-gui" | grep NEEDED || true)
+echo "$needed" | grep -q 'libgtk-3' && fail "gtk should be statically linked"
+echo "$needed" | grep -q 'libvte' && fail "vte should be statically linked"
+echo "$needed" | grep -q 'libc.so.6' || fail "GUI must still use host glibc"
 [[ -x $B/install.sh ]] || fail "install.sh not executable"
 [[ -x $B/uninstall.sh ]] || fail "uninstall.sh not executable"
 grep -q 'Exec=proxchunk-gui' "$B/proxchunk.desktop" || fail "desktop should launch proxchunk-gui"

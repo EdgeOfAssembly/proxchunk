@@ -10,8 +10,9 @@ proxy IPs so per-IP or per-connection throttling is less effective.
 - TUI progress bars (one per chunk plus a total)
 - Optional **proxchunk-gui** (GTK+3 + VTE): desktop window with a `> ` prompt,
   File/Quit (Ctrl+Q), Help/About. Release GUI is **glibc** (`scripts/build-glibc-gui.sh`):
-  `-static-libgcc -static-libstdc++ -Wl,--as-needed`, remaining GTK/VTE `.so`
-  files under `lib/` (`$ORIGIN/lib`). Host `libc`/`ld-linux` are not shipped.
+  `-static-libgcc -static-libstdc++`, then `-Wl,-Bstatic --start-group` for every
+  library that has a `.a`, `-Wl,-Bdynamic` for host libc and PKCS11 (`p11-kit`).
+  Remaining `.so` files (if any) live under `lib/` with `DT_RPATH $ORIGIN/lib`.
 
 The server must support HTTP Range (`Accept-Ranges: bytes`, 206 responses).
 
