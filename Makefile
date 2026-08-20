@@ -9,12 +9,15 @@ all:
 	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
 	cmake --build $(BUILD_DIR) -j$(NPROC) -- -s
 
-$(BUILD_DIR)/proxchunk $(BUILD_DIR)/test_plan: all
+$(BUILD_DIR)/proxchunk $(BUILD_DIR)/test_plan $(BUILD_DIR)/test_repl: all
 
 test: all
 	$(BUILD_DIR)/test_plan
+	$(BUILD_DIR)/test_repl
 	@echo "==> CLI help/version/edges"
 	bash tests/test_cli.sh $(BUILD_DIR)/proxchunk
+	@echo "==> REPL builtins"
+	bash tests/test_repl.sh $(BUILD_DIR)/proxchunk
 	@echo "==> local Range download"
 	bash tests/test_download.sh $(BUILD_DIR)/proxchunk
 	@echo "All tests passed."

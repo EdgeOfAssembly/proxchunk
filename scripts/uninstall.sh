@@ -41,6 +41,11 @@ rm_one() {
 }
 
 rm_one "$PREFIX/bin/proxchunk"
+rm_one "$PREFIX/bin/proxchunk-gui"
+if [[ -d $PREFIX/lib/proxchunk ]]; then
+    rm -rf "$PREFIX/lib/proxchunk"
+    echo "removed $PREFIX/lib/proxchunk"
+fi
 rm_one "$PREFIX/share/man/man1/proxchunk.1"
 rm_one "$PREFIX/share/applications/proxchunk.desktop"
 rm_one "$PREFIX/share/pixmaps/proxchunk.png"

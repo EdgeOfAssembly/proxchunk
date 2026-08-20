@@ -19,6 +19,7 @@ test "$ver" = "proxchunk 1.0" || fail "version want 'proxchunk 1.0' got '$ver'"
 
 help=$("$BIN" -h 2>&1)
 echo "$help" | grep -q 'logical CPUs' || fail "help should say concurrent default is logical CPUs"
+echo "$help" | grep -q -- '--repl' || fail "help should mention --repl"
 
 "$BIN" --not-a-flag http://example.com >/dev/null 2>&1 && fail "unknown option should fail"
 "$BIN" -c >/dev/null 2>&1 && fail "-c missing arg"

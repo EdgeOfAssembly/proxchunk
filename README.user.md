@@ -7,7 +7,12 @@ Extract this directory and run:
 ```bash
 ./proxchunk --help
 ./proxchunk -o file.bin 'https://example.com/file.bin'
+./proxchunk-gui          # desktop window (VTE prompt)
 ```
+
+The menu launcher starts **proxchunk-gui**. At the `> ` prompt, type proxchunk
+options and a URL, or `cd` / `mkdir` / `rm` / `rmdir` / `pwd` / `exit`.
+Ctrl+V pastes (also middle-click). File → Quit (Ctrl+Q). Help → About.
 
 The server must support HTTP Range (`Accept-Ranges: bytes`).
 

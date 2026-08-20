@@ -7,6 +7,7 @@
  */
 
 #include "proxchunk/plan.hpp"
+#include "proxchunk/repl.hpp"
 
 #include <libsf/tui/progress_bar.h>
 #include <libsf/tui/detail/terminal.h>
@@ -34,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
@@ -1453,14 +1455,105 @@ usage(const char* prog)
         << "      --no-tor          Do not auto-add local Tor on 127.0.0.1:9050\n"
         << "  -h, --help            Show this help\n"
         << "  -v, --version         Print version\n"
+        << "      --repl            Interactive prompt (used by proxchunk-gui)\n"
         << "\n"
         << "Fetches and scores free HTTP proxies, then downloads Range chunks\n"
         << "through different IPs to beat per-IP throttle.\n";
 }
 
+static std::string
+self_exe()
+{
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0)
+    {
+        return {};
+    }
+    buf[static_cast<std::size_t>(n)] = '\0';
+    return std::string(buf);
+}
+
+/**
+ * @brief Prompt loop: directory builtins, otherwise fork/exec this binary.
+ */
+static int
+run_repl()
+{
+    std::string self = self_exe();
+    if (self.empty())
+    {
+        std::cerr << "proxchunk: cannot resolve /proc/self/exe\n";
+        return 1;
+    }
+    std::cout << std::unitbuf;
+    for (;;)
+    {
+        std::cout << "> ";
+        std::string line;
+        if (!std::getline(std::cin, line))
+        {
+            std::cout << '\n';
+            break;
+        }
+        proxchunk::repl_result r = proxchunk::handle_repl_line(line);
+        switch (r.kind)
+        {
+        case proxchunk::repl_kind::empty:
+            break;
+        case proxchunk::repl_kind::quit:
+            return 0;
+        case proxchunk::repl_kind::error:
+            std::cerr << r.message << '\n';
+            break;
+        case proxchunk::repl_kind::info:
+            if (!r.message.empty())
+            {
+                std::cout << r.message << '\n';
+            }
+            break;
+        case proxchunk::repl_kind::run:
+        {
+            std::vector<char*> av;
+            av.push_back(self.data());
+            for (auto& s : r.argv)
+            {
+                av.push_back(s.data());
+            }
+            av.push_back(nullptr);
+            pid_t pid = fork();
+            if (pid < 0)
+            {
+                std::cerr << "fork failed\n";
+                break;
+            }
+            if (pid == 0)
+            {
+                execv(self.c_str(), av.data());
+                _exit(127);
+            }
+            int st = 0;
+            if (waitpid(pid, &st, 0) < 0)
+            {
+                std::cerr << "waitpid failed\n";
+            }
+            break;
+        }
+        }
+    }
+    return 0;
+}
+
 int
 main(int argc, char* argv[])
 {
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string_view(argv[i]) == "--repl")
+        {
+            return run_repl();
+        }
+    }
     if (argc < 2)
     {
         usage(argv[0]);

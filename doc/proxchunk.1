@@ -86,6 +86,18 @@ Show help.
 .TP
 .BR \-v ", " \-\-version
 Print version.
+.TP
+.B \-\-repl
+Interactive prompt used by the desktop GUI.
+Builtins:
+.BR cd ,
+.BR pwd ,
+.BR mkdir ,
+.BR rm
+(files only),
+.BR rmdir ,
+.BR exit .
+Any other line is passed to proxchunk as arguments.
 .SH FILES
 .TP
 .I ~/.config/proxchunk/proxies.txt

@@ -54,11 +54,39 @@ endif()
 add_executable(test_plan tests/test_plan.cpp)
 target_include_directories(test_plan PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+add_executable(test_repl tests/test_repl.cpp)
+target_include_directories(test_repl PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+find_package(PkgConfig)
+if(PkgConfig_FOUND)
+    pkg_check_modules(GTK3 gtk+-3.0)
+    pkg_check_modules(VTE vte-2.91)
+endif()
+if(GTK3_FOUND AND VTE_FOUND)
+    add_executable(proxchunk-gui src/gui.cpp)
+    target_include_directories(proxchunk-gui PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${GTK3_INCLUDE_DIRS}
+        ${VTE_INCLUDE_DIRS}
+    )
+    target_compile_definitions(proxchunk-gui PRIVATE PROXCHUNK_VERSION="${PROJECT_VERSION}")
+    target_compile_options(proxchunk-gui PRIVATE ${GTK3_CFLAGS_OTHER} ${VTE_CFLAGS_OTHER})
+    target_link_directories(proxchunk-gui PRIVATE ${GTK3_LIBRARY_DIRS} ${VTE_LIBRARY_DIRS})
+    target_link_libraries(proxchunk-gui PRIVATE ${VTE_LIBRARIES} ${GTK3_LIBRARIES})
+    message(STATUS "proxchunk-gui: GTK ${GTK3_VERSION} VTE ${VTE_VERSION}")
+else()
+    message(STATUS "proxchunk-gui: skipped (need gtk+-3.0 and vte-2.91)")
+endif()
+
 enable_testing()
 add_test(NAME plan COMMAND test_plan)
+add_test(NAME repl COMMAND test_repl)
 
 include(GNUInstallDirs)
 install(TARGETS proxchunk DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(TARGET proxchunk-gui)
+    install(TARGETS proxchunk-gui DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 install(FILES doc/proxchunk.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 install(FILES desktop/proxchunk.desktop
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)

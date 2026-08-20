@@ -27,7 +27,7 @@ sudo_run rsync -a --delete \
     --exclude build --exclude build-profile --exclude build-release \
     --exclude build-release-static --exclude .git --exclude '*.zip' \
     --exclude '*.dat' --exclude shots --exclude tmpcfg \
-    --exclude proxchunk-musl-static --exclude dist \
+    --exclude proxchunk-musl-static --exclude dist --exclude gui-bundle \
     "$ROOT/" "$ALPINE/src/proxchunk/"
 sudo_run rm -rf "$ALPINE/usr/local/include/libsf"
 sudo_run cp -a /usr/local/include/libsf "$ALPINE/usr/local/include/"

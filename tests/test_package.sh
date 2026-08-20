@@ -19,6 +19,9 @@ tar -tzf "$BIN_TGZ" > "$STAGE/bin.list"
 prefix=proxchunk-${VER}-${ARCH}
 
 grep -qx "${prefix}/proxchunk" "$STAGE/bin.list" || fail "binary missing proxchunk"
+grep -qx "${prefix}/proxchunk-gui" "$STAGE/bin.list" || fail "binary missing proxchunk-gui"
+grep -q "${prefix}/libexec/proxchunk-gui.bin" "$STAGE/bin.list" || fail "binary missing libexec GUI"
+grep -q "${prefix}/lib/ld-musl-x86_64.so.1" "$STAGE/bin.list" || fail "binary missing bundled ld-musl"
 grep -qx "${prefix}/install.sh" "$STAGE/bin.list" || fail "binary missing install.sh"
 grep -qx "${prefix}/uninstall.sh" "$STAGE/bin.list" || fail "binary missing uninstall.sh"
 grep -qx "${prefix}/README.md" "$STAGE/bin.list" || fail "binary missing README.md"
@@ -44,8 +47,10 @@ mkdir -p "$STAGE/bin"
 tar -xzf "$BIN_TGZ" -C "$STAGE/bin"
 B=$STAGE/bin/$prefix
 [[ -x $B/proxchunk ]] || fail "packed binary not executable"
+[[ -x $B/proxchunk-gui ]] || fail "packed proxchunk-gui not executable"
 [[ -x $B/install.sh ]] || fail "install.sh not executable"
 [[ -x $B/uninstall.sh ]] || fail "uninstall.sh not executable"
+grep -q 'Exec=proxchunk-gui' "$B/proxchunk.desktop" || fail "desktop should launch proxchunk-gui"
 
 info=$(file "$B/proxchunk")
 echo "file: $info"

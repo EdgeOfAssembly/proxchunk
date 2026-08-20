@@ -36,8 +36,28 @@ fi
 BIN=$DIR/proxchunk
 [[ -x $BIN ]] || { echo "missing $BIN" >&2; exit 1; }
 
-install -d "$PREFIX/bin"
-install -m 0755 "$BIN" "$PREFIX/bin/proxchunk"
+# Colocate CLI + GUI + bundled musl libs so $ORIGIN/lib resolves.
+LIBPC=$PREFIX/lib/proxchunk
+install -d "$LIBPC" "$PREFIX/bin"
+install -m 0755 "$BIN" "$LIBPC/proxchunk"
+ln -sfn ../lib/proxchunk/proxchunk "$PREFIX/bin/proxchunk"
+
+if [[ -x $DIR/proxchunk-gui ]]; then
+    install -m 0755 "$DIR/proxchunk-gui" "$LIBPC/proxchunk-gui"
+    ln -sfn ../lib/proxchunk/proxchunk-gui "$PREFIX/bin/proxchunk-gui"
+fi
+if [[ -d $DIR/lib ]]; then
+    rm -rf "$LIBPC/lib"
+    cp -a "$DIR/lib" "$LIBPC/lib"
+fi
+if [[ -d $DIR/libexec ]]; then
+    rm -rf "$LIBPC/libexec"
+    cp -a "$DIR/libexec" "$LIBPC/libexec"
+fi
+if [[ -d $DIR/share ]]; then
+    rm -rf "$LIBPC/share"
+    cp -a "$DIR/share" "$LIBPC/share"
+fi
 
 if [[ -f $DIR/doc/proxchunk.1 ]]; then
     install -d "$PREFIX/share/man/man1"
@@ -88,6 +108,8 @@ command -v xfce4-panel >/dev/null && xfce4-panel -r 2>/dev/null || true
 
 echo "installed PREFIX=$PREFIX"
 echo "  $PREFIX/bin/proxchunk"
+echo "  $PREFIX/bin/proxchunk-gui"
+echo "  $PREFIX/lib/proxchunk/"
 echo "  $PREFIX/share/pixmaps/proxchunk.png"
 echo "  $PREFIX/share/icons/hicolor/{16x16..512x512,scalable}/apps/proxchunk.*"
 echo "  $PREFIX/share/applications/proxchunk.desktop"

@@ -8,6 +8,10 @@ proxy IPs so per-IP or per-connection throttling is less effective.
 - Scores HTTP and SOCKS5 proxies (public lists, optional user list, optional Tor)
 - Downloads chunks in parallel, then assembles the file in order
 - TUI progress bars (one per chunk plus a total)
+- Optional **proxchunk-gui** (GTK+3 + VTE): desktop window with a `> ` prompt,
+  File/Quit (Ctrl+Q), Help/About. Built as a musl self-contained tree
+  (`scripts/build-musl-gui.sh`): static trampoline + bundled `.so` under `lib/`
+  with `-Wl,--as-needed`.
 
 The server must support HTTP Range (`Accept-Ranges: bytes`, 206 responses).
 
@@ -55,6 +59,7 @@ proxchunk [options] <URL>
 | `--no-tor` | Do not auto-add `socks5h://127.0.0.1:9050` |
 | `-h`, `--help` | Help |
 | `-v`, `--version` | Version |
+| `--repl` | Interactive `> ` prompt (used by proxchunk-gui) |
 
 Arguments and options may appear in any order.
 
