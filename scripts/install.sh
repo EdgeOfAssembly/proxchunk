@@ -36,7 +36,7 @@ fi
 BIN=$DIR/proxchunk
 [[ -x $BIN ]] || { echo "missing $BIN" >&2; exit 1; }
 
-# Colocate CLI + GUI + bundled musl libs so $ORIGIN/lib resolves.
+# Colocate CLI + GUI + bundled GTK .so so $ORIGIN/lib resolves.
 LIBPC=$PREFIX/lib/proxchunk
 install -d "$LIBPC" "$PREFIX/bin"
 install -m 0755 "$BIN" "$LIBPC/proxchunk"
@@ -49,10 +49,6 @@ fi
 if [[ -d $DIR/lib ]]; then
     rm -rf "$LIBPC/lib"
     cp -a "$DIR/lib" "$LIBPC/lib"
-fi
-if [[ -d $DIR/libexec ]]; then
-    rm -rf "$LIBPC/libexec"
-    cp -a "$DIR/libexec" "$LIBPC/libexec"
 fi
 if [[ -d $DIR/share ]]; then
     rm -rf "$LIBPC/share"

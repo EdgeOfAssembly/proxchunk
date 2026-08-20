@@ -18,24 +18,13 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/icons" "$STAGE/doc"
 
 install -m 0755 "$BIN" "$STAGE/proxchunk"
-if [[ -x $ROOT/proxchunk-gui ]]; then
+if [[ -x $ROOT/gui-bundle/proxchunk-gui ]]; then
+    install -m 0755 "$ROOT/gui-bundle/proxchunk-gui" "$STAGE/proxchunk-gui"
+elif [[ -x $ROOT/proxchunk-gui ]]; then
     install -m 0755 "$ROOT/proxchunk-gui" "$STAGE/proxchunk-gui"
 fi
 if [[ -d $ROOT/gui-bundle/lib ]]; then
     cp -a "$ROOT/gui-bundle/lib" "$STAGE/lib"
-fi
-if [[ -d $ROOT/gui-bundle/libexec ]]; then
-    cp -a "$ROOT/gui-bundle/libexec" "$STAGE/libexec"
-fi
-if [[ -d $ROOT/gui-bundle/share ]]; then
-    cp -a "$ROOT/gui-bundle/share" "$STAGE/share"
-fi
-# Also accept a pre-assembled tree next to the CLI.
-if [[ -d $ROOT/lib && ! -d $STAGE/lib ]]; then
-    cp -a "$ROOT/lib" "$STAGE/lib"
-fi
-if [[ -d $ROOT/libexec && ! -d $STAGE/libexec ]]; then
-    cp -a "$ROOT/libexec" "$STAGE/libexec"
 fi
 install -m 0755 "$ROOT/scripts/install.sh" "$STAGE/install.sh"
 install -m 0755 "$ROOT/scripts/uninstall.sh" "$STAGE/uninstall.sh"

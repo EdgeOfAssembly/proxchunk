@@ -51,6 +51,7 @@ release-static:
 	@echo "Stripped: build-release-static/proxchunk.stripped"
 
 dist:
+	bash scripts/build-glibc-gui.sh
 	bash scripts/make-portable.sh
 	bash scripts/make-src.sh
 

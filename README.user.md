@@ -7,7 +7,7 @@ Extract this directory and run:
 ```bash
 ./proxchunk --help
 ./proxchunk -o file.bin 'https://example.com/file.bin'
-./proxchunk-gui          # desktop window (VTE prompt)
+./proxchunk-gui          # desktop window (VTE prompt; glibc Linux)
 ```
 
 The menu launcher starts **proxchunk-gui**. At the `> ` prompt, type proxchunk

@@ -1,6 +1,7 @@
 #!/bin/sh
-# Runs inside the Alpine chroot. Build proxchunk-gui (static if possible,
-# else dynamic + bundled .so). Output: /src/proxchunk/gui-out/
+# Optional Alpine/musl experiment. The public binary GUI is glibc:
+#   scripts/build-glibc-gui.sh
+# Runs inside the Alpine chroot. Output: /src/proxchunk/gui-out/
 set -e
 cd /src/proxchunk
 

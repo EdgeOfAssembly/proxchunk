@@ -75,10 +75,9 @@ std::string
 find_icon(const std::string& root)
 {
     const char* rel[] = {
-        "icons/proxchunk.xpm",
-        "icons/proxchunk.png",
-        "icons/pixmaps/proxchunk.png",
         "icons/hicolor/48x48/apps/proxchunk.png",
+        "icons/pixmaps/proxchunk.png",
+        "icons/proxchunk.png",
         nullptr,
     };
     for (int i = 0; rel[i] != nullptr; ++i)
@@ -112,8 +111,6 @@ void
 on_about(GtkWidget* /*w*/, gpointer data)
 {
     auto* g = static_cast<Gui*>(data);
-    // Plain window (not GtkDialog) so GTK does not load theme/svg icons
-    // via gdk-pixbuf — musl gdk-pixbuf 2.44 uses glycin and has no PNG loader.
     GtkWidget* dlg = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(dlg), "About proxchunk");
     gtk_window_set_transient_for(GTK_WINDOW(dlg), GTK_WINDOW(g->window));
@@ -126,6 +123,11 @@ on_about(GtkWidget* /*w*/, gpointer data)
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 16);
     gtk_container_add(GTK_CONTAINER(dlg), vbox);
 
+    if (!g->icon.empty())
+    {
+        GtkWidget* img = gtk_image_new_from_file(g->icon.c_str());
+        gtk_box_pack_start(GTK_BOX(vbox), img, FALSE, FALSE, 0);
+    }
     GtkWidget* name = gtk_label_new(nullptr);
     gtk_label_set_markup(GTK_LABEL(name), "<b>proxchunk</b>");
     gtk_box_pack_start(GTK_BOX(vbox), name, FALSE, FALSE, 0);
@@ -226,7 +228,17 @@ make_menubar(Gui* g, GtkAccelGroup* accel)
 int
 main(int argc, char* argv[])
 {
+    const std::string root_early = install_root();
     g_setenv("GTK_CSD", "0", TRUE);
+    g_setenv("GTK_IM_MODULE", "gtk-im-context-simple", TRUE);
+    g_setenv("GDK_BACKEND", "x11", TRUE);
+    {
+        fs::path gio = fs::path(root_early) / "lib" / "gio" / "modules";
+        if (fs::is_directory(gio))
+        {
+            g_setenv("GIO_MODULE_DIR", gio.string().c_str(), TRUE);
+        }
+    }
     gtk_init(&argc, &argv);
     if (GtkSettings* st = gtk_settings_get_default(); st != nullptr)
     {
@@ -248,7 +260,10 @@ main(int argc, char* argv[])
     g.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(g.window), "proxchunk " PROXCHUNK_VERSION);
     gtk_window_set_default_size(GTK_WINDOW(g.window), 900, 560);
-    (void)g.icon;
+    if (!g.icon.empty())
+    {
+        gtk_window_set_icon_from_file(GTK_WINDOW(g.window), g.icon.c_str(), nullptr);
+    }
     g_signal_connect(g.window, "destroy", G_CALLBACK(on_quit), nullptr);
 
     GtkAccelGroup* accel = gtk_accel_group_new();

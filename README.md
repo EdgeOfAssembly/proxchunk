@@ -9,9 +9,9 @@ proxy IPs so per-IP or per-connection throttling is less effective.
 - Downloads chunks in parallel, then assembles the file in order
 - TUI progress bars (one per chunk plus a total)
 - Optional **proxchunk-gui** (GTK+3 + VTE): desktop window with a `> ` prompt,
-  File/Quit (Ctrl+Q), Help/About. Built as a musl self-contained tree
-  (`scripts/build-musl-gui.sh`): static trampoline + bundled `.so` under `lib/`
-  with `-Wl,--as-needed`.
+  File/Quit (Ctrl+Q), Help/About. Release GUI is **glibc** (`scripts/build-glibc-gui.sh`):
+  `-static-libgcc -static-libstdc++ -Wl,--as-needed`, remaining GTK/VTE `.so`
+  files under `lib/` (`$ORIGIN/lib`). Host `libc`/`ld-linux` are not shipped.
 
 The server must support HTTP Range (`Accept-Ranges: bytes`, 206 responses).
 
