@@ -1,98 +1,101 @@
 # proxchunk
 
-**Fully automatic multi-proxy Range chunked downloader for Linux**
+Multi-proxy HTTP Range downloader for Linux.
 
-Bypasses per-IP download speed limits / throttling on filesharing and other sites by:
+It splits a file into Range chunks and fetches them through different
+proxy IPs so per-IP or per-connection throttling is less effective.
 
-1. Automatically fetching free HTTP proxy lists from multiple public sources
-2. Concurrently testing them, dropping dead ones, and sorting the live pool by measured download speed
-3. Continuously refreshing the pool in the background
-4. Probing the target URL for `Content-Length` + `Accept-Ranges` support
-5. Splitting the file into chunks and downloading each chunk concurrently through a *different* proxy (each with its own IP)
-6. Assembling the parts into the final file in correct order
+- Scores HTTP and SOCKS5 proxies (public lists, optional user list, optional Tor)
+- Downloads chunks in parallel, then assembles the file in order
+- TUI progress bars (one per chunk plus a total)
 
-Written in modern **C++23**, uses **libcurl**.
+The server must support HTTP Range (`Accept-Ranges: bytes`, 206 responses).
 
 ## Build
 
-```bash
-# Requires: g++ with C++23 support (GCC 13+), libcurl development headers
-sudo apt install g++ libcurl4-openssl-dev   # Debian/Ubuntu
+Requires **g++** (C++23) and **libcurl**.
 
-g++ -std=c++23 -O2 -Wall -Wextra -o proxchunk src/proxchunk.cpp -lcurl -pthread
+```bash
+make
+make test
 ```
 
-Or with CMake:
+Optimized release:
 
 ```bash
-mkdir build && cd build
-cmake ..
-make -j
+make release
+```
+
+Mostly-static release (`libcurl.a` plus static libgcc/libstdc++; nghttp2 and
+brotli stay shared if those packages have no `.a`):
+
+```bash
+make release-static
 ```
 
 ## Usage
 
-```bash
-./proxchunk <URL> [options]
+```text
+proxchunk [options] <URL>
+```
 
-Options:
-  -o, --output <file>   Output path (default: basename of URL)
-  -c, --concurrent <N>  Max concurrent chunk downloads (default: 16)
-  -s, --chunk-mb <MB>   Chunk size in megabytes (default: 8)
-  -p, --proxies <N>     Max proxies to keep in pool (default: 40)
-  -r, --refresh <sec>   Proxy refresh interval (default: 180)
-      --limit-mb <MB>   Download only the first MB (0 = full file)
-      --direct          Single-IP download (no proxies)
-      --no-progress     Do not draw the TUI progress bar
-      --no-cache        Do not load/save ~/.cache/proxchunk/proxies.txt
-      --show-proxies    Prefix each chunk bar with a 15-char IPv4 field
-      --socks <url>     Extra SOCKS/HTTP proxy (repeatable)
-      --proxy-file <f>  Extra list: one ip:port or scheme://host:port per line
-      --no-user-proxies Do not load ~/.config/proxchunk/proxies.txt
-      --no-tor          Do not auto-add local Tor (socks5h://127.0.0.1:9050)
+| Option | Meaning |
+|--------|---------|
+| `-o`, `--output FILE` | Output path (default: URL basename) |
+| `-c`, `--concurrent N` | Max parallel chunks (default: 16) |
+| `-s`, `--chunk-mb MB` | Chunk size in MiB (default: 8) |
+| `-p`, `--proxies N` | Live proxies to keep (default: 40) |
+| `-r`, `--refresh SEC` | Pool refresh interval (default: 180) |
+| `--limit-mb MB` | Download only the first MB (0 = full file) |
+| `--direct` | Single IP, no proxies |
+| `--no-progress` | No TUI bars |
+| `--no-cache` | Do not use `~/.cache/proxchunk/proxies.txt` |
+| `--show-proxies` | Show a 15-character IPv4 field on each chunk bar |
+| `--socks URL` | Extra HTTP or SOCKS proxy (repeatable) |
+| `--proxy-file FILE` | Extra `ip:port` or `scheme://host:port` list |
+| `--no-user-proxies` | Skip `~/.config/proxchunk/proxies.txt` |
+| `--no-tor` | Do not auto-add `socks5h://127.0.0.1:9050` |
+| `-h`, `--help` | Help |
+| `-v`, `--version` | Version |
 
-User proxies (optional file, created by you):
+Arguments and options may appear in any order.
+
+### User proxy list
+
+Create `~/.config/proxchunk/proxies.txt` if you have your own endpoints:
 
 ```text
-# ~/.config/proxchunk/proxies.txt
+# comments allowed
 1.2.3.4:8080
 socks5h://10.0.0.1:1080
 ```
 
-Bare `host:port` is HTTP. These are speed-tested first (with Tor) so they are not skipped.
-  -h, --help            Show help
-  -v, --version         Print version
-```
-
-Progress uses `#include <libsf/tui/progress_bar.h>` (`-I/usr/local/include`).
+Bare `host:port` is HTTP. Those entries are speed-tested first so they are
+not skipped when the public list is large.
 
 ### Example
 
 ```bash
-./proxchunk "https://example.com/largefile.zip" -o largefile.zip -c 24 -s 10
+proxchunk --show-proxies -c 8 -s 8 -o file.bin 'https://example.com/file.bin'
 ```
 
-The tool will:
+## Notes
 
-- Fetch & test proxies (may take 20–60 s the first time)
-- Probe the file for size and Range support
-- Download in parallel chunks via different proxies
-- Show progress
-- Assemble the final file
+- Free public proxies are often slow or dead. A private list via
+  `--proxy-file` is more reliable.
+- Stalled chunks are aborted and requeued (up to eight tries). If a chunk
+  still fails, the output is not assembled.
+- No resume of a partial output file yet.
+- For sites that hide the real file behind cookies or a landing page, resolve
+  the direct URL first, then pass that URL to proxchunk.
 
-## Notes & Limitations
+## Files
 
-- The remote server **must** support HTTP Range requests (`Accept-Ranges: bytes` and proper 206 responses). Most direct download links do; some intermediate / captcha pages do not.
-- Free public proxies are often slow, unstable, or already overloaded. Expect variable results. For serious use, replace the sources with your own paid residential / datacenter proxy list (edit the sources vector in the code).
-- Currently focused on HTTP proxies. SOCKS support can be added.
-- For filesharing sites that require cookies, referers, or special headers to get the final direct link, resolve that URL first (e.g. with plowshare, yt-dlp, or a browser), then feed the clean direct URL to proxchunk.
-- No resume yet in this version (can be added).
-- Tested on Linux. Other platforms may work with minor changes.
+| Path | Role |
+|------|------|
+| `~/.config/proxchunk/proxies.txt` | Optional user proxy list |
+| `~/.cache/proxchunk/proxies.txt` | Scored cache from previous runs |
 
 ## License
 
 MIT
-
-## Credits
-
-Inspired by the need for a true multi-IP segmented downloader. Built by the Grok team for the user.

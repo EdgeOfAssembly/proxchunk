@@ -1,0 +1,127 @@
+.TH PROXCHUNK 1 "2026-08-20" "proxchunk 1.7" "User Commands"
+.SH NAME
+proxchunk \- multi-proxy HTTP Range chunked downloader
+.SH SYNOPSIS
+.B proxchunk
+[\fIOPTIONS\fR]
+.I URL
+.br
+.B proxchunk
+.I URL
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B proxchunk
+downloads a file by splitting it into HTTP Range chunks and fetching
+those chunks through different proxy IP addresses.
+The goal is to reduce the effect of per-IP or per-connection throttling.
+.PP
+It can fetch public HTTP and SOCKS5 proxy lists, score them, optionally
+reuse a local cache, and include local Tor
+.RB ( socks5h://127.0.0.1:9050 )
+when that port is in use.
+The remote server must support HTTP Range requests (206 Partial Content).
+.SH OPTIONS
+.TP
+.BR \-o ", " \-\-output " " \fIfile\fR
+Output path.
+Default: last path segment of
+.IR URL .
+.TP
+.BR \-c ", " \-\-concurrent " " \fIN\fR
+Maximum concurrent chunk downloads (default: 16).
+.TP
+.BR \-s ", " \-\-chunk\-mb " " \fIMB\fR
+Chunk size in mebibytes (default: 8).
+.TP
+.BR \-p ", " \-\-proxies " " \fIN\fR
+Maximum live proxies to keep (default: 40).
+.TP
+.BR \-r ", " \-\-refresh " " \fIsec\fR
+Background proxy refresh interval in seconds (default: 180).
+.TP
+.BI \-\-limit\-mb " MB"
+Download only the first
+.I MB
+mebibytes (0 = full file).
+.TP
+.B \-\-direct
+Single-IP download (no proxies).
+.TP
+.B \-\-no\-progress
+Do not draw the TUI progress bars.
+.TP
+.B \-\-no\-cache
+Do not load or save
+.IR ~/.cache/proxchunk/proxies.txt .
+.TP
+.B \-\-show\-proxies
+Prefix each chunk bar with a 15-character IPv4 field.
+.TP
+.BI \-\-socks " url"
+Add one extra HTTP or SOCKS proxy.
+Repeatable.
+Example:
+.BR socks5h://127.0.0.1:9050 .
+.TP
+.BI \-\-proxy\-file " file"
+Load extra proxies, one
+.I ip:port
+or
+.I scheme://host:port
+per line.
+Bare
+.I host:port
+is treated as HTTP.
+.TP
+.B \-\-no\-user\-proxies
+Do not load
+.IR ~/.config/proxchunk/proxies.txt .
+.TP
+.B \-\-no\-tor
+Do not auto-add local Tor on port 9050/9150.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.TP
+.BR \-v ", " \-\-version
+Print version.
+.SH FILES
+.TP
+.I ~/.config/proxchunk/proxies.txt
+Optional user proxy list (ip:port or URL per line).
+.TP
+.I ~/.cache/proxchunk/proxies.txt
+Scored proxy cache from previous runs.
+.SH EXIT STATUS
+.TP
+.B 0
+Success, or help/version requested.
+.TP
+.B 1
+Usage error, probe failure, or download/assemble failure.
+.SH EXAMPLES
+Download through scored proxies:
+.RS
+.B proxchunk https://example.com/file.bin
+.RE
+.PP
+Single-IP download with a 32 MiB cap:
+.RS
+.B proxchunk --direct --limit-mb 32 -o sample.bin https://example.com/file.bin
+.RE
+.PP
+Use a private proxy list:
+.RS
+.B proxchunk --proxy-file ./proxies.txt --no-cache URL
+.RE
+.SH SEE ALSO
+.BR curl (1),
+.BR wget (1),
+.BR wget2 (1)
+.SH BUGS
+Free public proxies are often slow or dead.
+A stalled chunk is aborted and requeued; if it still fails, the whole
+download is not assembled.
+There is no resume of a partial output file.
+.SH AUTHORS
+proxchunk contributors.

@@ -1,6 +1,7 @@
 /build/
 /build-profile/
 /build-release/
+/build-release-static/
 *.o
 /*.dat
 /*.zip
@@ -11,3 +12,5 @@ profile.txt
 profile-before.txt
 profile-after.txt
 scripts/__pycache__/
+tmpcfg/
+

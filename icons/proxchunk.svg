@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="proxchunk">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12161c"/>
+      <stop offset="1" stop-color="#0b0e12"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1eb45a"/>
+      <stop offset="1" stop-color="#28c8ff"/>
+    </linearGradient>
+    <linearGradient id="chev" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3ad07a"/>
+      <stop offset="1" stop-color="#2aa8e0"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="url(#bg)"/>
+  <rect x="28" y="28" width="456" height="456" rx="88" fill="none" stroke="#1c3038" stroke-width="8"/>
+  <!-- four Range chunks, different lengths -->
+  <rect x="88" y="108" width="280" height="36" rx="10" fill="url(#bar)"/>
+  <rect x="88" y="160" width="336" height="36" rx="10" fill="url(#bar)" opacity="0.92"/>
+  <rect x="88" y="212" width="200" height="36" rx="10" fill="url(#bar)" opacity="0.85"/>
+  <rect x="88" y="264" width="256" height="36" rx="10" fill="url(#bar)" opacity="0.9"/>
+  <!-- merge into a download chevron -->
+  <path fill="url(#chev)" d="M256 318 L368 318 L256 430 L144 318 Z"/>
+</svg>

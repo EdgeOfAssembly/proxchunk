@@ -38,7 +38,7 @@
 #include <vector>
 
 #ifndef PROXCHUNK_VERSION
-#define PROXCHUNK_VERSION "1.6"
+#define PROXCHUNK_VERSION "1.7"
 #endif
 
 namespace fs = std::filesystem;

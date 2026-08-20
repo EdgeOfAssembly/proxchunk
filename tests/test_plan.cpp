@@ -6,7 +6,10 @@
 #include "proxchunk/plan.hpp"
 
 #include <cassert>
+#include <cstdio>
+#include <fstream>
 #include <iostream>
+#include <string>
 
 int
 main()
@@ -39,6 +42,22 @@ main()
     assert(normalize_proxy_line("1.2.3.4:8080") == "http://1.2.3.4:8080");
     assert(normalize_proxy_line("socks5h://127.0.0.1:9050") == "socks5h://127.0.0.1:9050");
     assert(normalize_proxy_line("  10.0.0.1:1080  ", "socks5h://") == "socks5h://10.0.0.1:1080");
+    assert(normalize_proxy_line("no-port").empty());
+
+    auto tiny = plan_chunks(1, 1);
+    assert(tiny.size() == 1 && tiny[0].start == 0 && tiny[0].end == 0);
+
+    const char* tmp = "/tmp/proxchunk-test-proxies.txt";
+    {
+        std::ofstream o(tmp);
+        o << "1.2.3.4:8080\n# comment\n\nsocks5h://10.0.0.1:1080\n";
+    }
+    auto loaded = proxchunk::load_proxy_file(tmp);
+    std::remove(tmp);
+    assert(loaded.size() == 2);
+    assert(loaded[0] == "http://1.2.3.4:8080");
+    assert(loaded[1] == "socks5h://10.0.0.1:1080");
+    assert(proxchunk::load_proxy_file("/no/such/proxchunk-proxies.txt").empty());
 
     std::cout << "test_plan ok\n";
     return 0;
