@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=proxchunk
+GenericName=Range downloader
+Comment=Multi-proxy HTTP Range chunked downloader
+Exec=proxchunk
+Icon=proxchunk
+Terminal=true
+Categories=Network;FileTransfer;
+Keywords=download;proxy;range;http;
+StartupNotify=false

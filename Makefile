@@ -3,7 +3,7 @@ NPROC      := $(shell nproc 2>/dev/null || echo 1)
 BUILD_DIR  ?= build
 BUILD_TYPE ?= Debug
 
-.PHONY: all test tests verify clean profile release release-static
+.PHONY: all test tests verify clean profile release release-static dist
 
 all:
 	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
@@ -46,3 +46,6 @@ release-static:
 	    build-release-static/proxchunk
 	@echo "Static binary: build-release-static/proxchunk"
 	@echo "Stripped: build-release-static/proxchunk.stripped"
+
+dist:
+	bash scripts/make-portable-zip.sh

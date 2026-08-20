@@ -60,6 +60,8 @@ add_test(NAME plan COMMAND test_plan)
 include(GNUInstallDirs)
 install(TARGETS proxchunk DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES doc/proxchunk.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+install(FILES desktop/proxchunk.desktop
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
 install(FILES icons/proxchunk.svg
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps)
 install(FILES icons/proxchunk.png
