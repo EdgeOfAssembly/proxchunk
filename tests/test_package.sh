@@ -56,8 +56,9 @@ if command -v readelf >/dev/null; then
         fail "readelf still reports Build ID"
     fi
 fi
-ldd "$B/proxchunk" 2>&1 | grep -qi 'not a dynamic' \
-    || fail "ldd thinks packed binary is dynamic"
+ldd_out=$(ldd "$B/proxchunk" 2>&1 || true)
+echo "$ldd_out" | grep -qiE 'not a dynamic|statically linked' \
+    || fail "ldd thinks packed binary is dynamic: $ldd_out"
 
 ver=$("$B/proxchunk" -v)
 test "$ver" = "proxchunk ${VER}" || fail "packed -v: $ver"
