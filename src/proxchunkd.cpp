@@ -21,6 +21,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <pthread.h>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -52,7 +53,7 @@ struct Options
     fs::path socket_path;
     fs::path pid_path;
     fs::path log_path;
-    int max_proxies = 40;
+    int max_proxies = 128;
     int refresh_sec = 180;
     std::string test_url = proxchunk::k_default_test_url;
     bool use_cache = true;
@@ -185,7 +186,7 @@ usage(const char* prog)
         << "      --status          Ping the socket; print live/busy/top\n"
         << "      --socket <path>   UNIX socket (default: $XDG_RUNTIME_DIR/proxchunk/proxchunkd.sock)\n"
         << "      --pid-file <path> PID file (default: sibling proxchunkd.pid)\n"
-        << "  -p, --proxies <N>     Max live proxies to keep (default: 40)\n"
+        << "  -p, --proxies <N>     Max live proxies to keep (default: 128)\n"
         << "  -r, --refresh <sec>   Re-test interval (default: 180; 0 = off)\n"
         << "      --test-url <url>  Scoring URL (default: cloudflare 64KiB)\n"
         << "      --no-cache        Do not load/save ~/.cache/proxchunk/proxies.txt\n"
@@ -668,6 +669,19 @@ run_server(Options opt, int ready_fd)
 
     proxchunk::ProxyEngineConfig cfg;
     cfg.max_keep = static_cast<std::size_t>(opt.max_proxies);
+    {
+        unsigned ncpu = std::thread::hardware_concurrency();
+        if (ncpu < 1)
+        {
+            ncpu = 4;
+        }
+        cfg.max_inflight = std::max(32, static_cast<int>(ncpu) * 16);
+        if (opt.debug)
+        {
+            std::cerr << "[proxchunkd] curl_multi inflight=" << cfg.max_inflight
+                      << " ncpu=" << ncpu << " keep=" << cfg.max_keep << "\n";
+        }
+    }
     cfg.refresh_sec = opt.refresh_sec;
     cfg.test_url = opt.test_url;
     cfg.cache_path = proxchunk::default_proxy_cache_path();

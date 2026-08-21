@@ -662,11 +662,13 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
     /* One TUI bar per live connection, not one per planned slice. */
     std::vector<SlotProgress> slots(static_cast<std::size_t>(n_workers));
     const bool use_bar = opt.progress && isatty(STDOUT_FILENO);
+    std::atomic<bool> direct_busy{false};
 
     auto worker_fn = [&](int worker_id) {
         auto& sp = slots[static_cast<std::size_t>(worker_id)];
         CURL* easy = nullptr;
         std::optional<proxchunk::acquired_proxy> pipe;
+        bool holding_direct = false;
         double last_mbps = 0.0;
         auto drop_pipe = [&](bool ok) {
             if (pipe && client != nullptr)
@@ -674,32 +676,30 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 (void)client->release(pipe->url, ok, last_mbps);
             }
             pipe.reset();
+            if (holding_direct)
+            {
+                direct_busy.store(false, std::memory_order_relaxed);
+                holding_direct = false;
+            }
             if (easy != nullptr)
             {
                 curl_easy_cleanup(easy);
                 easy = nullptr;
             }
         };
-        const bool use_direct = opt.direct || (worker_id == 0);
         auto open_pipe = [&](const std::vector<std::string>& skip) -> bool {
-            if (easy != nullptr && (use_direct || pipe))
-            {
-                return true;
-            }
             drop_pipe(false);
-            if (use_direct)
+            if (opt.direct || !direct_busy.exchange(true, std::memory_order_acq_rel))
             {
                 easy = curl_easy_init();
                 if (easy == nullptr)
                 {
+                    direct_busy.store(false, std::memory_order_relaxed);
                     return false;
                 }
                 setup_pipeline(easy, url, "");
+                holding_direct = true;
                 sp.set_ip("direct");
-                if (!use_bar)
-                {
-                    std::cerr << "[proxchunk] Pipeline via direct\n";
-                }
                 return true;
             }
             if (client == nullptr)
@@ -719,28 +719,49 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
             }
             setup_pipeline(easy, url, p->url);
             sp.set_ip(p->url);
-            if (!use_bar)
-            {
-                std::cerr << "[proxchunk] Pipeline via " << p->url << "\n";
-            }
             pipe = std::move(p);
             return true;
         };
 
         while (true)
         {
-            Job job;
+            /* Get a pipe first so 0% jobs stay queued for whoever is free. */
+            Job peek;
+            bool have_job = false;
             {
                 std::unique_lock lock(work_mtx);
                 if (jobs.empty())
                 {
                     if (inflight.load() == 0)
                     {
+                        lock.unlock();
                         drop_pipe(true);
                         return;
                     }
-                    lock.unlock();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                else
+                {
+                    peek = jobs.front();
+                    have_job = true;
+                }
+            }
+            if (!have_job)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
+            if (!open_pipe({}))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
+
+            Job job;
+            {
+                std::unique_lock lock(work_mtx);
+                if (jobs.empty())
+                {
+                    drop_pipe(true);
                     continue;
                 }
                 job = jobs.front();
@@ -754,17 +775,6 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
             sp.want.store(want, std::memory_order_relaxed);
             sp.now.store(0, std::memory_order_relaxed);
             sp.active.store(true, std::memory_order_relaxed);
-
-            if (!open_pipe(job.tried))
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                {
-                    std::lock_guard g(work_mtx);
-                    jobs.push_front(job);
-                }
-                inflight.fetch_sub(1);
-                continue;
-            }
             if (pipe)
             {
                 job.tried.push_back(pipe->url);
@@ -787,11 +797,8 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 sp.active.store(false, std::memory_order_relaxed);
                 bytes_done.fetch_add(want);
                 finished.fetch_add(1);
-                if (pipe)
-                {
-                    /* Return this proxy to the pool; keep the direct pipe. */
-                    drop_pipe(true);
-                }
+                /* Direct and proxy both go free so the next 0% chunk can attach. */
+                drop_pipe(true);
             }
             else
             {
@@ -799,8 +806,6 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 sp.active.store(false, std::memory_order_relaxed);
                 job.attempts++;
                 constexpr int k_chunk_tries = 3;
-                /* Walk the whole scored pool, not just the first 8. A 0-byte
-                 * chunk must stay on the queue so a healthy pipe can steal it. */
                 constexpr int k_max_proxies = 32;
                 if (job.attempts >= k_chunk_tries)
                 {
@@ -809,18 +814,9 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 if (static_cast<int>(job.tried.size()) >= k_max_proxies)
                 {
                     failed.fetch_add(1);
-                    if (!use_bar)
-                    {
-                        std::cerr << "[proxchunk] Failed chunk " << ch.id << " after "
-                                  << job.tried.size() << " proxies\n";
-                    }
                 }
                 else
                 {
-                    if (!use_bar)
-                    {
-                        std::cerr << "[proxchunk] Requeue chunk " << ch.id << " for another pipeline\n";
-                    }
                     std::lock_guard g(work_mtx);
                     jobs.push_back(job);
                 }
@@ -1005,7 +1001,7 @@ usage(const char* prog)
         << "  -c, --concurrent <N>  Equal Range pieces and parallel connections\n"
         << "                        (default: logical CPUs)\n"
         << "  -s, --chunk-mb <MB>   Split by this size in MiB instead of N equal pieces\n"
-        << "  -p, --proxies <N>     Max proxies (passed to proxchunkd on auto-start; default: 40)\n"
+        << "  -p, --proxies <N>     Max proxies (passed to proxchunkd on auto-start; default: 128)\n"
         << "  -r, --refresh <sec>   Re-test interval for auto-started daemon (default: off)\n"
         << "      --limit-mb <MB>   Download only the first MB (0 = full file)\n"
         << "      --direct          Single-IP download (no daemon, no proxies)\n"
@@ -1131,7 +1127,7 @@ main(int argc, char* argv[])
     bool concurrent_set = false;
     int chunk_mb   = 0;
     bool chunk_mb_set = false;
-    int max_proxies = 40;
+    int max_proxies = 128;
     int refresh_sec = 0;
     RunOptions opt;
     bool use_cache = true;

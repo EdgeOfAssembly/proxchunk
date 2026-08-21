@@ -60,7 +60,8 @@ using ProxyProgressFn = std::function<void(std::size_t completed, std::size_t to
  */
 struct ProxyEngineConfig
 {
-    std::size_t max_keep = 40;     ///< Live rows to retain (busy may exceed).
+    std::size_t max_keep = 128;    ///< Live rows to retain (busy may exceed).
+    int max_inflight = 96;         ///< Parallel curl_multi transfers (set from ncpu).
     int refresh_sec = 180;         ///< 0 disables the updater thread.
     std::string test_url;          ///< Empty → @ref k_default_test_url.
     std::filesystem::path cache_path;

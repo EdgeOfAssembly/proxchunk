@@ -602,19 +602,20 @@ ProxyEngine::test_proxies_multi(const std::vector<std::string>& candidates,
                                 std::size_t must_test_first, const ProxyProgressFn& progress)
 {
     const std::size_t total = candidates.size();
-    const std::size_t want_live = cfg_.max_keep + 8;
+    const std::size_t want_live = cfg_.max_keep;
+    const int inflight_cap = cfg_.max_inflight > 0 ? cfg_.max_inflight : 96;
 
     CURLM* multi = curl_multi_init();
     if (!multi)
     {
         return {};
     }
-    curl_multi_setopt(multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, static_cast<long>(k_max_inflight));
+    curl_multi_setopt(multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, static_cast<long>(inflight_cap));
 
     std::vector<Proxy> tested;
     std::size_t curl_ok = 0;
     std::vector<std::unique_ptr<TestJob>> jobs;
-    jobs.reserve(std::min(total, static_cast<std::size_t>(k_max_inflight) * 2));
+    jobs.reserve(std::min(total, static_cast<std::size_t>(inflight_cap) * 2));
 
     std::size_t next = 0;
     std::size_t completed = 0;
@@ -622,7 +623,7 @@ ProxyEngine::test_proxies_multi(const std::vector<std::string>& candidates,
     bool stop_adding = false;
 
     auto add_one = [&]() -> bool {
-        if (stop_adding || next >= total || inflight >= k_max_inflight || stop_flag_.load())
+        if (stop_adding || next >= total || inflight >= inflight_cap || stop_flag_.load())
         {
             return false;
         }
@@ -639,7 +640,7 @@ ProxyEngine::test_proxies_multi(const std::vector<std::string>& candidates,
         return true;
     };
 
-    while (inflight < k_max_inflight && add_one())
+    while (inflight < inflight_cap && add_one())
     {
     }
 
@@ -779,7 +780,8 @@ ProxyEngine::verify_target(const std::string& url)
     {
         return 0;
     }
-    curl_multi_setopt(multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, 32L);
+    const int inflight_cap = cfg_.max_inflight > 0 ? cfg_.max_inflight : 96;
+    curl_multi_setopt(multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, static_cast<long>(inflight_cap));
 
     auto make = [&](const std::string& addr) -> CURL* {
         auto job = std::make_unique<Job>();
@@ -809,7 +811,7 @@ ProxyEngine::verify_target(const std::string& url)
     int inflight = 0;
     std::size_t next = 0;
     auto add = [&]() {
-        while (inflight < 32 && next < addrs.size() && !stop_flag_.load())
+        while (inflight < inflight_cap && next < addrs.size() && !stop_flag_.load())
         {
             CURL* c = make(addrs[next++]);
             if (c == nullptr)
