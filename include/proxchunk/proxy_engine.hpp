@@ -35,6 +35,7 @@ struct Proxy
     int         fails      = 0;    ///< Consecutive failures; dead at >= 4.
     bool        alive      = true;
     bool        busy       = false; ///< Held by an ACQUIRE lease.
+    bool        target_ok  = true;  ///< Reaches last TARGET URL (Range). True if no TARGET yet.
 
     [[nodiscard]] bool operator>(const Proxy& o) const noexcept
     {
@@ -172,6 +173,16 @@ public:
     /** @return True while the first refresh has not finished. */
     [[nodiscard]] bool warming() const;
 
+    /**
+     * @brief Range-probe every live row against @p url (the real file).
+     *
+     * GET @c Range: 0-8191 through each proxy. Only rows that return
+     * HTTP 200/206 stay leasable. Updates speed from this test.
+     *
+     * @return How many proxies reached the target.
+     */
+    std::size_t verify_target(const std::string& url);
+
 private:
     struct TestJob
     {
@@ -203,6 +214,8 @@ private:
     std::atomic<bool>         running_{false};
     std::atomic<bool>         stop_flag_{false};
     std::atomic<bool>         warming_{true};
+    std::string               target_url_;
+    bool                      target_filter_{false};
 };
 
 } // namespace proxchunk

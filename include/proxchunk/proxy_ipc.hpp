@@ -191,6 +191,12 @@ public:
     [[nodiscard]] bool ping();
 
     /**
+     * @brief `TARGET <url>` — daemon Range-tests the pool against this file.
+     * @return How many proxies reached the target, or -1 on IPC error.
+     */
+    [[nodiscard]] int set_target(std::string_view url);
+
+    /**
      * @brief Retry ACQUIRE for up to 30 s (short sleeps on `ERR empty`).
      *
      * @param[in] skip Proxy URLs already tried for this chunk; the daemon

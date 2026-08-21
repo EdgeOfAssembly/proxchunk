@@ -593,6 +593,23 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
         return false;
     }
 
+    if (client != nullptr)
+    {
+        std::cerr << "[proxchunk] Asking proxchunkd to Range-test proxies against the target\n";
+        const int n = client->set_target(url);
+        if (n < 0)
+        {
+            std::cerr << "[proxchunk] TARGET IPC failed\n";
+            return false;
+        }
+        std::cerr << "[proxchunk] " << n << " proxies reached the target\n";
+        if (n < 1)
+        {
+            std::cerr << "[proxchunk] No proxy can fetch this URL. Aborting.\n";
+            return false;
+        }
+    }
+
     std::int64_t download_size = info.size;
     if (opt.limit_bytes > 0 && opt.limit_bytes < download_size)
     {

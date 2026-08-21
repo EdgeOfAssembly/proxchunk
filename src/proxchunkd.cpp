@@ -464,6 +464,20 @@ handle_line(Conn& c, const std::string& line, proxchunk::ProxyEngine& engine,
         (void)proxchunk::ipc_write_line(c.fd.get(), "OK pong");
         return CmdResult::ok;
     }
+    if (tok[0] == "TARGET")
+    {
+        if (tok.size() != 2)
+        {
+            (void)proxchunk::ipc_write_line(c.fd.get(), "ERR protocol");
+            return CmdResult::close;
+        }
+        const std::size_t n = engine.verify_target(tok[1]);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "OK %zu", n);
+        ipc_dbg(debug, ">>", buf);
+        (void)proxchunk::ipc_write_line(c.fd.get(), buf);
+        return CmdResult::ok;
+    }
     if (tok[0] == "STATS")
     {
         char buf[128];

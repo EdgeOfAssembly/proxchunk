@@ -115,6 +115,10 @@ ProxyEngine::acquire(const std::vector<std::string>& skip)
             {
                 continue;
             }
+            if (target_filter_ && !p.target_ok)
+            {
+                continue;
+            }
             if (honor_skip)
             {
                 bool skipped = false;
@@ -203,7 +207,7 @@ ProxyEngine::live() const
     std::size_t n = 0;
     for (const auto& p : pool_)
     {
-        if (p.alive)
+        if (p.alive && (!target_filter_ || p.target_ok))
         {
             ++n;
         }
@@ -738,6 +742,155 @@ ProxyEngine::test_proxies_multi(const std::vector<std::string>& candidates,
     emit(true);
     curl_multi_cleanup(multi);
     return tested;
+}
+
+std::size_t
+ProxyEngine::verify_target(const std::string& url)
+{
+    if (url.empty())
+    {
+        return 0;
+    }
+    std::vector<std::string> addrs;
+    {
+        std::unique_lock lock(mutex_);
+        target_url_ = url;
+        target_filter_ = true;
+        for (auto& p : pool_)
+        {
+            p.target_ok = false;
+            if (p.alive)
+            {
+                addrs.push_back(p.address);
+            }
+        }
+    }
+    log(std::string("TARGET Range-test ") + std::to_string(addrs.size()) + " proxies vs " + url);
+
+    struct Job
+    {
+        std::string address;
+        CURL* easy = nullptr;
+        std::chrono::steady_clock::time_point t0{};
+    };
+    std::vector<std::unique_ptr<Job>> jobs;
+    CURLM* multi = curl_multi_init();
+    if (!multi)
+    {
+        return 0;
+    }
+    curl_multi_setopt(multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, 32L);
+
+    auto make = [&](const std::string& addr) -> CURL* {
+        auto job = std::make_unique<Job>();
+        job->address = addr;
+        job->t0 = std::chrono::steady_clock::now();
+        CURL* c = curl_easy_init();
+        if (!c)
+        {
+            return nullptr;
+        }
+        curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(c, CURLOPT_RANGE, "0-8191");
+        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_null);
+        curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(c, CURLOPT_USERAGENT, k_user_agent);
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, 8L);
+        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 5L);
+        apply_curl_proxy(c, addr, url.starts_with("https://"));
+        apply_fast_tcp(c);
+        curl_easy_setopt(c, CURLOPT_PRIVATE, job.get());
+        job->easy = c;
+        jobs.push_back(std::move(job));
+        return c;
+    };
+
+    int inflight = 0;
+    std::size_t next = 0;
+    auto add = [&]() {
+        while (inflight < 32 && next < addrs.size() && !stop_flag_.load())
+        {
+            CURL* c = make(addrs[next++]);
+            if (c == nullptr)
+            {
+                continue;
+            }
+            curl_multi_add_handle(multi, c);
+            ++inflight;
+        }
+    };
+    add();
+
+    std::unordered_map<std::string, double> ok_speed;
+    int still = 0;
+    curl_multi_perform(multi, &still);
+    while (still > 0 && !stop_flag_.load())
+    {
+        int numfds = 0;
+        curl_multi_poll(multi, nullptr, 0, 150, &numfds);
+        curl_multi_perform(multi, &still);
+        int queued = 0;
+        while (CURLMsg* msg = curl_multi_info_read(multi, &queued))
+        {
+            if (msg->msg != CURLMSG_DONE)
+            {
+                continue;
+            }
+            CURL* easy = msg->easy_handle;
+            char* priv = nullptr;
+            curl_easy_getinfo(easy, CURLINFO_PRIVATE, &priv);
+            auto* job = reinterpret_cast<Job*>(priv);
+            long code = 0;
+            curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &code);
+            const bool ok = (msg->data.result == CURLE_OK && (code == 206 || code == 200));
+            if (ok && job != nullptr)
+            {
+                double secs =
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - job->t0)
+                        .count();
+                if (secs < 0.01)
+                {
+                    secs = 0.01;
+                }
+                ok_speed[job->address] = (8192.0 / (1024.0 * 1024.0)) / secs;
+                if (cfg_.debug)
+                {
+                    log(std::string("target-ok ") + job->address);
+                }
+            }
+            else if (cfg_.debug && job != nullptr)
+            {
+                log(std::string("target-fail ") + job->address);
+            }
+            curl_multi_remove_handle(multi, easy);
+            curl_easy_cleanup(easy);
+            --inflight;
+            add();
+        }
+    }
+    curl_multi_cleanup(multi);
+
+    std::unique_lock lock(mutex_);
+    for (auto& p : pool_)
+    {
+        auto it = ok_speed.find(p.address);
+        if (it != ok_speed.end())
+        {
+            p.target_ok = true;
+            p.speed_mbps = it->second;
+            p.fails = 0;
+            p.alive = true;
+        }
+        else
+        {
+            p.target_ok = false;
+        }
+    }
+    std::sort(pool_.begin(), pool_.end(), std::greater<>{});
+    const std::size_t n = ok_speed.size();
+    log(std::string("TARGET ok ") + std::to_string(n) + " / " + std::to_string(addrs.size()));
+    return n;
 }
 
 } // namespace proxchunk

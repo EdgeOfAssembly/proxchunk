@@ -466,6 +466,27 @@ ProxyClient::hello()
     return true;
 }
 
+int
+ProxyClient::set_target(std::string_view url)
+{
+    std::lock_guard g(mu_);
+    std::string cmd = "TARGET ";
+    cmd += url;
+    std::string reply;
+    if (!rpc(cmd, reply) || !reply.starts_with("OK "))
+    {
+        return -1;
+    }
+    try
+    {
+        return std::stoi(reply.substr(3));
+    }
+    catch (...)
+    {
+        return -1;
+    }
+}
+
 bool
 ProxyClient::ping()
 {
