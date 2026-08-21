@@ -817,6 +817,10 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 }
                 else
                 {
+                    if (!use_bar)
+                    {
+                        std::cerr << "[proxchunk] Requeue chunk " << ch.id << "\n";
+                    }
                     std::lock_guard g(work_mtx);
                     jobs.push_back(job);
                 }
