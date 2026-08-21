@@ -765,6 +765,8 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 sp.active.store(false, std::memory_order_relaxed);
                 bytes_done.fetch_add(want);
                 finished.fetch_add(1);
+                /* Return this proxy to the pool so a 0-byte chunk can lease it. */
+                drop_pipe(true);
             }
             else
             {
@@ -772,10 +774,11 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 sp.active.store(false, std::memory_order_relaxed);
                 job.attempts++;
                 constexpr int k_chunk_tries = 3;
-                constexpr int k_max_proxies = 8;
+                /* Walk the whole scored pool, not just the first 8. A 0-byte
+                 * chunk must stay on the queue so a healthy pipe can steal it. */
+                constexpr int k_max_proxies = 32;
                 if (job.attempts >= k_chunk_tries)
                 {
-                    /* Give the chunk to another live pipeline; 3 tries are per pipe. */
                     job.attempts = 0;
                 }
                 if (static_cast<int>(job.tried.size()) >= k_max_proxies)
