@@ -95,36 +95,26 @@ struct BarLayout
             }
         }
 
-        int row = 0;
-        if (have_cooked)
-        {
-            auto pos = tui::detail::query_cursor_position(200000);
-            if (pos && pos->row > 0)
-            {
-                row = pos->row;
-            }
-        }
-
         n_lines = lines;
-        if (row <= 0)
-        {
-            row = term_rows - lines + 1;
-        }
-        if (row + lines - 1 > term_rows)
-        {
-            row = term_rows - lines + 1;
-        }
+        /* Pin to the bottom so a second download overwrites the same slot
+         * instead of stacking under leftover bars. */
+        int row = term_rows - lines + 1;
         if (row < 1)
         {
             row = 1;
         }
         origin_row = row;
+        for (int i = 0; i < n_lines; ++i)
+        {
+            std::cout << "\033[" << (origin_row + i) << ";1H\033[K";
+        }
+        std::cout.flush();
         active = true;
     }
 
     void go_line(int i) const
     {
-        std::cout << "\033[" << (origin_row + i) << ";1H";
+        std::cout << "\033[" << (origin_row + i) << ";1H\033[K";
     }
 
     void finish()
@@ -133,7 +123,8 @@ struct BarLayout
         {
             return;
         }
-        std::cout << "\033[" << (origin_row + n_lines) << ";1H" << tui::line_wrap;
+        /* Stay on the last bar row; cooked + newline in the caller for logs. */
+        std::cout << "\033[" << (origin_row + n_lines - 1) << ";1H" << tui::line_wrap;
         tui::detail::show_cursor();
         std::cout.flush();
         if (have_cooked)
@@ -793,24 +784,29 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 sp.active.store(false, std::memory_order_relaxed);
                 job.attempts++;
                 constexpr int k_chunk_tries = 3;
-                if (job.attempts < k_chunk_tries)
+                constexpr int k_max_proxies = 8;
+                if (job.attempts >= k_chunk_tries)
                 {
-                    if (!use_bar)
-                    {
-                        std::cerr << "[proxchunk] Requeue chunk " << ch.id << " (try "
-                                  << job.attempts + 1 << "/" << k_chunk_tries << ")\n";
-                    }
-                    std::lock_guard g(work_mtx);
-                    jobs.push_back(job);
+                    /* Give the chunk to another live pipeline; 3 tries are per pipe. */
+                    job.attempts = 0;
                 }
-                else
+                if (static_cast<int>(job.tried.size()) >= k_max_proxies)
                 {
                     failed.fetch_add(1);
                     if (!use_bar)
                     {
                         std::cerr << "[proxchunk] Failed chunk " << ch.id << " after "
-                                  << k_chunk_tries << " pipelines\n";
+                                  << job.tried.size() << " proxies\n";
                     }
+                }
+                else
+                {
+                    if (!use_bar)
+                    {
+                        std::cerr << "[proxchunk] Requeue chunk " << ch.id << " for another pipeline\n";
+                    }
+                    std::lock_guard g(work_mtx);
+                    jobs.push_back(job);
                 }
             }
             inflight.fetch_sub(1);
@@ -926,6 +922,7 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
     if (use_bar)
     {
         chunk_bars.finish();
+        std::cerr << '\n';
     }
     else
     {
