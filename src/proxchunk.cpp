@@ -253,34 +253,22 @@ probe_file(const std::string& url, const std::string& proxy)
 }
 
 /**
- * Draw one bar. Byte totals go in the label; the widget is 0–100 so libsf's
- * 32-bit reciprocal percent cannot stick at 99% when now==want.
+ * One frame via the tui API: label | bar with % inside | now/total bytes.
+ * progress must be allowed to equal total (inclusive) or the bar never hits 100%.
+ * Do not call progress_bar()/progress_bar_done() — those emit a newline.
  */
 static void
 draw_byte_bar(const char* msg, std::int64_t now, std::int64_t want,
               const tui::progress_bar_style& style)
 {
-    int pct = 0;
-    if (want > 0)
+    const long long total = want > 0 ? static_cast<long long>(want) : 1;
+    long long progress = now < 0 ? 0 : static_cast<long long>(now);
+    if (progress > total)
     {
-        if (now >= want)
-        {
-            pct = 100;
-        }
-        else
-        {
-            pct = static_cast<int>((now * 100) / want);
-            if (now > 0 && pct == 0)
-            {
-                pct = 1;
-            }
-        }
+        progress = total;
     }
-    char full[128];
-    std::snprintf(full, sizeof(full), "%s  %lld/%lld", msg, static_cast<long long>(now),
-                  static_cast<long long>(want > 0 ? want : 1));
-    auto st = tui::progress_bar_init(full, 100, 28, style);
-    tui::progress_bar_update(st, pct);
+    auto st = tui::progress_bar_init(msg, total, 36, style);
+    tui::progress_bar_update(st, progress);
 }
 
 /** Width of "255.255.255.255" — IPv4 field is always this wide so bars do not jump. */
