@@ -350,6 +350,14 @@ ProxyEngine::try_reuse_cache(const ProxyProgressFn& progress)
         os << "Loaded " << cached.size() << " proxies from " << cfg_.cache_path.string();
         log(os.str());
     }
+    if (cached.size() < cfg_.max_keep)
+    {
+        std::ostringstream os;
+        os << "Cache has " << cached.size() << " rows (keep=" << cfg_.max_keep
+           << "). Full refresh.";
+        log(os.str());
+        return false;
+    }
     auto locals = local_proxy_urls();
     std::vector<std::string> candidates = locals;
     candidates.insert(candidates.end(), cached.begin(), cached.end());
