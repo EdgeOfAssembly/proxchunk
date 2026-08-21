@@ -202,8 +202,11 @@ public:
      * @param[in] skip Proxy URLs already tried for this chunk; the daemon
      *            leases the next fastest row not in this list when possible.
      */
+    /**
+     * @param[in] wait_ms 0 = one RPC (no wait). &gt;0 retry on empty.
+     */
     [[nodiscard]] std::optional<acquired_proxy> acquire(
-        const std::vector<std::string>& skip = {});
+        const std::vector<std::string>& skip = {}, int wait_ms = 0);
 
     /**
      * @brief `RELEASE <url> ok|fail <mbps>`.

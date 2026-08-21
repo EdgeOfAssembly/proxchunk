@@ -680,13 +680,14 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 easy = nullptr;
             }
         };
+        const bool use_direct = opt.direct || (worker_id == 0);
         auto open_pipe = [&](const std::vector<std::string>& skip) -> bool {
-            if (easy != nullptr && (opt.direct || pipe))
+            if (easy != nullptr && (use_direct || pipe))
             {
                 return true;
             }
             drop_pipe(false);
-            if (opt.direct)
+            if (use_direct)
             {
                 easy = curl_easy_init();
                 if (easy == nullptr)
@@ -695,13 +696,17 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 }
                 setup_pipeline(easy, url, "");
                 sp.set_ip("direct");
+                if (!use_bar)
+                {
+                    std::cerr << "[proxchunk] Pipeline via direct\n";
+                }
                 return true;
             }
             if (client == nullptr)
             {
                 return false;
             }
-            auto p = client->acquire(skip);
+            auto p = client->acquire(skip, 0);
             if (!p)
             {
                 return false;
@@ -782,8 +787,11 @@ run_download(const std::string& url, const fs::path& output, const RunOptions& o
                 sp.active.store(false, std::memory_order_relaxed);
                 bytes_done.fetch_add(want);
                 finished.fetch_add(1);
-                /* Return this proxy to the pool so a 0-byte chunk can lease it. */
-                drop_pipe(true);
+                if (pipe)
+                {
+                    /* Return this proxy to the pool; keep the direct pipe. */
+                    drop_pipe(true);
+                }
             }
             else
             {
